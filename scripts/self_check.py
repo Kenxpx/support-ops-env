@@ -16,7 +16,6 @@ REQUIRED_FILES = [
     "README.md",
     "BENCHMARK_SPEC.md",
     "LICENSE",
-    "SUBMISSION_READY.md",
     "openenv.yaml",
     "pyproject.toml",
     "models.py",
