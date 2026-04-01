@@ -65,6 +65,18 @@ QUEUE_OPTIONS = [
 PRIORITY_OPTIONS = ["low", "medium", "high", "urgent"]
 STATUS_OPTIONS = ["open", "pending", "resolved", "escalated"]
 INCIDENT_SEVERITIES = ["sev3", "sev2", "sev1"]
+TASK_MILESTONE_IDS = {
+    task.task_id: {milestone.milestone_id for milestone in task.milestones}
+    for task in TASKS
+}
+TASK_MILESTONE_WEIGHTS = {
+    task.task_id: {milestone.milestone_id: milestone.weight for milestone in task.milestones}
+    for task in TASKS
+}
+TASK_GUARDRAIL_PENALTIES = {
+    task.task_id: {guardrail.violation_id: guardrail.penalty for guardrail in task.guardrails}
+    for task in TASKS
+}
 
 
 class SupportOpsEnvironment(Environment[SupportOpsAction, SupportOpsObservation, SupportOpsState]):
@@ -78,8 +90,8 @@ class SupportOpsEnvironment(Environment[SupportOpsAction, SupportOpsObservation,
         self._task: TaskSpec | None = None
         self._last_error: str | None = None
         self._last_action_summary = "Environment created."
-        self._ticket_search_text: dict[str, str] = {}
-        self._kb_search_text: dict[str, str] = {}
+        self._ticket_search_tokens: dict[str, set[str]] = {}
+        self._kb_search_tokens: dict[str, set[str]] = {}
 
     def reset(
         self,
@@ -405,7 +417,7 @@ class SupportOpsEnvironment(Environment[SupportOpsAction, SupportOpsObservation,
             if normalized_tag not in ticket["tags"]:
                 ticket["tags"].append(normalized_tag)
                 ticket["tags"].sort()
-                self._update_ticket_search_text(ticket["ticket_id"])
+                self._update_ticket_search_tokens(ticket["ticket_id"])
             self._last_action_summary = (
                 f"Added tag '{normalized_tag}' to {ticket['ticket_id']}."
             )
@@ -611,24 +623,22 @@ class SupportOpsEnvironment(Environment[SupportOpsAction, SupportOpsObservation,
         return text
 
     def _search_tickets(self, query: str) -> list[dict[str, Any]]:
-        tokens = self._tokenize(query)
+        tokens = set(self._tokenize(query))
         scored: list[tuple[int, dict[str, Any]]] = []
-        for ticket_id, ticket in self._state.tickets.items():
-            haystack = self._ticket_search_text[ticket_id]
-            score = sum(1 for token in tokens if token in haystack)
+        for ticket_id, haystack_tokens in self._ticket_search_tokens.items():
+            score = len(tokens & haystack_tokens)
             if score > 0:
-                scored.append((score, ticket))
+                scored.append((score, self._state.tickets[ticket_id]))
         scored.sort(key=lambda item: (-item[0], item[1]["ticket_id"]))
         return [ticket for _, ticket in scored[:4]]
 
     def _search_kb(self, query: str) -> list[dict[str, Any]]:
-        tokens = self._tokenize(query)
+        tokens = set(self._tokenize(query))
         scored: list[tuple[int, dict[str, Any]]] = []
-        for article_id, article in self._state.kb_articles.items():
-            haystack = self._kb_search_text[article_id]
-            score = sum(1 for token in tokens if token in haystack)
+        for article_id, haystack_tokens in self._kb_search_tokens.items():
+            score = len(tokens & haystack_tokens)
             if score > 0:
-                scored.append((score, article))
+                scored.append((score, self._state.kb_articles[article_id]))
         scored.sort(key=lambda item: (-item[0], item[1]["article_id"]))
         return [article for _, article in scored[:4]]
 
@@ -642,6 +652,7 @@ class SupportOpsEnvironment(Environment[SupportOpsAction, SupportOpsObservation,
         assert self._task is not None
         checks = self._evaluate_task()
         previous = set(self._state.completed_milestones)
+        milestone_weights = TASK_MILESTONE_WEIGHTS[self._task.task_id]
         newly_completed: list[str] = []
         reward = 0.0
 
@@ -654,10 +665,10 @@ class SupportOpsEnvironment(Environment[SupportOpsAction, SupportOpsObservation,
             self._state.completed_milestones.extend(newly_completed)
             self._state.completed_milestones.sort()
 
-        score = 0.0
-        for milestone in self._task.milestones:
-            if milestone.milestone_id in self._state.completed_milestones:
-                score += milestone.weight
+        score = sum(
+            milestone_weights[milestone_id]
+            for milestone_id in self._state.completed_milestones
+        )
 
         penalty_delta = self._guardrail_penalty(
             set(self._state.guardrail_violations) - previous_violations
@@ -728,9 +739,7 @@ class SupportOpsEnvironment(Environment[SupportOpsAction, SupportOpsObservation,
 
     def _guardrail_penalty(self, violation_ids: set[str]) -> float:
         assert self._task is not None
-        penalties = {
-            guardrail.violation_id: guardrail.penalty for guardrail in self._task.guardrails
-        }
+        penalties = TASK_GUARDRAIL_PENALTIES[self._task.task_id]
         return round(sum(penalties[violation_id] for violation_id in violation_ids), 4)
 
     def _evaluate_task(self) -> dict[str, bool]:
@@ -861,9 +870,7 @@ class SupportOpsEnvironment(Environment[SupportOpsAction, SupportOpsObservation,
     def _all_milestones_completed(self) -> bool:
         assert self._task is not None
         completed = set(self._state.completed_milestones)
-        return all(
-            milestone.milestone_id in completed for milestone in self._task.milestones
-        )
+        return TASK_MILESTONE_IDS[self._task.task_id].issubset(completed)
 
     def _merge_unique(self, target: list[str], values: list[str]) -> None:
         for value in values:
@@ -871,37 +878,33 @@ class SupportOpsEnvironment(Environment[SupportOpsAction, SupportOpsObservation,
                 target.append(value)
 
     def _rebuild_search_indexes(self) -> None:
-        self._ticket_search_text = {}
+        self._ticket_search_tokens = {}
         for ticket_id in self._state.tickets:
-            self._update_ticket_search_text(ticket_id)
+            self._update_ticket_search_tokens(ticket_id)
 
-        self._kb_search_text = {
-            article_id: " ".join(
-                [
-                    article["article_id"],
-                    article["title"],
-                    article["summary"],
-                    article["body"],
-                    " ".join(article["keywords"]),
-                    " ".join(article["key_facts"]),
-                ]
-            ).lower()
+        self._kb_search_tokens = {
+            article_id: self._indexed_terms(
+                article["article_id"],
+                article["title"],
+                article["summary"],
+                article["body"],
+                " ".join(article["keywords"]),
+                " ".join(article["key_facts"]),
+            )
             for article_id, article in self._state.kb_articles.items()
         }
 
-    def _update_ticket_search_text(self, ticket_id: str) -> None:
+    def _update_ticket_search_tokens(self, ticket_id: str) -> None:
         ticket = self._state.tickets[ticket_id]
-        self._ticket_search_text[ticket_id] = " ".join(
-            [
-                ticket["ticket_id"],
-                ticket["subject"],
-                ticket["customer"],
-                ticket["product"],
-                ticket["region"],
-                ticket["body"],
-                " ".join(ticket["tags"]),
-            ]
-        ).lower()
+        self._ticket_search_tokens[ticket_id] = self._indexed_terms(
+            ticket["ticket_id"],
+            ticket["subject"],
+            ticket["customer"],
+            ticket["product"],
+            ticket["region"],
+            ticket["body"],
+            " ".join(ticket["tags"]),
+        )
 
     def _log_event(self, message: str) -> None:
         self._state.action_history.append(message)
@@ -910,6 +913,9 @@ class SupportOpsEnvironment(Environment[SupportOpsAction, SupportOpsObservation,
     @staticmethod
     def _tokenize(text: str) -> list[str]:
         return [token for token in text.lower().replace("-", " ").split() if token]
+
+    def _indexed_terms(self, *parts: str) -> set[str]:
+        return set(self._tokenize(" ".join(parts)))
 
     @staticmethod
     def _contains_all(text: str, needles: list[str]) -> bool:

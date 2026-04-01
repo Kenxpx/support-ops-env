@@ -40,6 +40,31 @@ class SupportOpsEnvironmentTests(unittest.TestCase):
         self.assertEqual(observation.reward, -0.05)
         self.assertIn("cannot be a duplicate of itself", observation.last_error or "")
 
+    def test_search_actions_surface_expected_ticket_and_kb_matches(self) -> None:
+        self.env.reset(task_id="hard_partner_token_leak")
+
+        observation = self.env.step(
+            SupportOpsAction(
+                action_type="search_tickets",
+                query="OrbitPay token exposure duplicate security",
+            )
+        )
+        self.assertIn(
+            "T-4002",
+            [ticket.ticket_id for ticket in observation.ticket_search_results],
+        )
+
+        observation = self.env.step(
+            SupportOpsAction(
+                action_type="search_kb",
+                query="partner API token leak audit logs rotate credential sev2",
+            )
+        )
+        self.assertIn(
+            "KB-SEC-09",
+            [article.article_id for article in observation.kb_search_results],
+        )
+
     def test_heuristic_policy_solves_all_tasks(self) -> None:
         for task_id in TASK_IDS:
             with self.subTest(task_id=task_id):
