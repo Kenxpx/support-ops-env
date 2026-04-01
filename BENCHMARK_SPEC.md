@@ -8,6 +8,7 @@ benchmark for agent evaluation. The environment emphasizes:
 - retrieval before action
 - deterministic state transitions
 - dense programmatic grading
+- sticky penalties for unsafe operational decisions
 - realistic enterprise support workflows
 - long-horizon incident handling without requiring an actual browser
 
@@ -26,6 +27,7 @@ benchmark for agent evaluation. The environment emphasizes:
 | `easy_refund_request` | Easy | inspect, retrieve policy, route, tag, reply, resolve | wrong queue, no policy retrieval, vague reply |
 | `medium_sso_lockout` | Medium | inspect, retrieve KB, triage, explain likely cause, request artifact, leave pending | resolves too early, asks for wrong artifact, wrong queue |
 | `hard_vip_outage_duplicate` | Hard | search, incident creation, severity setting, duplicate consolidation, public communication | misses duplicate, skips incident, weak status update, wrong severity |
+| `hard_partner_token_leak` | Hard | security triage, duplicate consolidation, incident severity, direct customer guidance | public disclosure, wrong severity, premature closure |
 
 ## Reward Philosophy
 
@@ -35,6 +37,7 @@ Reward is:
 
 - positive when the agent newly completes a milestone
 - slightly negative for invalid actions
+- negatively adjusted by sticky guardrail violations
 - deterministic for the same task and action sequence
 
 This makes the benchmark:
@@ -51,6 +54,15 @@ The hardest task was intentionally designed to feel benchmark-quality:
 - a public status update forces externally-facing communication
 - incident creation and severity force workflow correctness
 - the primary ticket must remain the operational source of truth
+
+## Why The Security Task Matters
+
+The second hard task adds benchmark depth instead of repetition:
+
+- it reuses the same support-ops world while covering security-sensitive handling
+- it rewards direct customer communication over public broadcast
+- it checks whether the agent can pick the right severity instead of always using the highest one
+- it introduces sticky guardrail penalties for bad safety behavior
 
 ## Suggested Judge Talking Points
 

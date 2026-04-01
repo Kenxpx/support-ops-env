@@ -43,6 +43,13 @@ class MilestoneSpec:
 
 
 @dataclass(frozen=True)
+class GuardrailSpec:
+    violation_id: str
+    description: str
+    penalty: float
+
+
+@dataclass(frozen=True)
 class TaskSpec:
     task_id: str
     title: str
@@ -56,6 +63,7 @@ class TaskSpec:
     tickets: tuple[TicketSeed, ...]
     knowledge_base: tuple[KnowledgeBaseSeed, ...]
     milestones: tuple[MilestoneSpec, ...]
+    guardrails: tuple[GuardrailSpec, ...] = ()
 
 
 TASKS: tuple[TaskSpec, ...] = (
@@ -171,6 +179,13 @@ TASKS: tuple[TaskSpec, ...] = (
                 0.20,
             ),
             MilestoneSpec("status_resolved", "Resolve the ticket.", 0.15),
+        ),
+        guardrails=(
+            GuardrailSpec(
+                "resolved_before_refund_guidance",
+                "Resolving the case before sending refund timing is a customer-ops failure.",
+                0.10,
+            ),
         ),
     ),
     TaskSpec(
@@ -290,6 +305,18 @@ TASKS: tuple[TaskSpec, ...] = (
                 0.16,
             ),
             MilestoneSpec("status_pending", "Leave the ticket pending.", 0.16),
+        ),
+        guardrails=(
+            GuardrailSpec(
+                "resolved_without_customer_input",
+                "Closing an enterprise auth outage before collecting customer input is unsafe.",
+                0.12,
+            ),
+            GuardrailSpec(
+                "reply_missing_metadata_request",
+                "Replying without asking for the right SAML artifact weakens the workflow.",
+                0.08,
+            ),
         ),
     ),
     TaskSpec(
@@ -474,6 +501,225 @@ TASKS: tuple[TaskSpec, ...] = (
                 0.05,
             ),
             MilestoneSpec("status_escalated", "Leave the ticket escalated.", 0.05),
+        ),
+        guardrails=(
+            GuardrailSpec(
+                "deescalated_live_outage",
+                "Resolving or downgrading a live VIP outage before stabilization is a major mistake.",
+                0.10,
+            ),
+            GuardrailSpec(
+                "under_severitized_major_outage",
+                "A widespread checkout outage should not be triaged below SEV1.",
+                0.08,
+            ),
+            GuardrailSpec(
+                "weak_public_status_update",
+                "A public incident update should clearly state that the team is investigating the outage.",
+                0.07,
+            ),
+        ),
+    ),
+    TaskSpec(
+        task_id="hard_partner_token_leak",
+        title="Partner Token Leak Incident",
+        difficulty="hard",
+        scenario=(
+            "You are the incident lead for security-sensitive support escalations. "
+            "A partner accidentally exposed a live API token and both the partner "
+            "team and your SOC have raised tickets."
+        ),
+        goal=(
+            "Handle a partner token leak with incident-grade discipline. Search for "
+            "related tickets, inspect the primary issue, consult the security "
+            "playbook, route the work correctly, set urgent priority, create an "
+            "incident, set the right severity, consolidate the duplicate SOC "
+            "ticket, document rotation and audit scope, reply with direct rotation "
+            "guidance, and keep the primary ticket escalated."
+        ),
+        instructions=(
+            "Keep T-4001 as the primary record for the incident.",
+            "Use search before acting so you do not miss the SOC duplicate.",
+            "Treat this as a security incident handled through direct communication.",
+            "Do not use the public status page for an isolated credential exposure.",
+        ),
+        primary_ticket_id="T-4001",
+        step_limit=15,
+        allowed_tags=("security", "token_leak", "partner_api", "duplicate"),
+        tickets=(
+            TicketSeed(
+                ticket_id="T-4001",
+                subject="Partner API token exposed in public gist",
+                customer="OrbitPay",
+                customer_tier="enterprise",
+                region="US-East",
+                product="Partner API",
+                body=(
+                    "One of our engineers accidentally posted a live server token in "
+                    "a public gist for around twenty minutes. The gist is now gone, "
+                    "but we need to rotate the credential and understand what else "
+                    "to check right away."
+                ),
+                account_owner="Devika Rao",
+                impacted_users=25,
+                opened_minutes_ago=14,
+                sla_minutes=30,
+                related_ticket_ids=("T-4002", "T-4003"),
+            ),
+            TicketSeed(
+                ticket_id="T-4002",
+                subject="SOC duplicate: investigate OrbitPay token exposure",
+                customer="OrbitPay",
+                customer_tier="enterprise",
+                region="US-East",
+                product="Partner API",
+                body=(
+                    "Security operations received an automated alert about a leaked "
+                    "OrbitPay credential. This appears to be the same incident as "
+                    "the partner-raised support case."
+                ),
+                account_owner="Devika Rao",
+                impacted_users=3,
+                opened_minutes_ago=12,
+                sla_minutes=30,
+                related_ticket_ids=("T-4001",),
+            ),
+            TicketSeed(
+                ticket_id="T-4003",
+                subject="Sandbox webhook retry delays",
+                customer="OrbitPay",
+                customer_tier="enterprise",
+                region="US-East",
+                product="Sandbox Webhooks",
+                body=(
+                    "Our sandbox environment is seeing delayed webhook retries. "
+                    "This is unrelated to the token exposure incident."
+                ),
+                account_owner="Devika Rao",
+                impacted_users=4,
+                opened_minutes_ago=260,
+                sla_minutes=240,
+            ),
+        ),
+        knowledge_base=(
+            KnowledgeBaseSeed(
+                article_id="KB-SEC-09",
+                title="Credential exposure response for partner API tokens",
+                summary=(
+                    "Security playbook for leaked partner API credentials and direct "
+                    "customer communication."
+                ),
+                body=(
+                    "For a leaked live partner API token, route the case to incident "
+                    "response, mark priority urgent, create an incident, and set "
+                    "severity SEV2 for a single-partner credential exposure. Tell "
+                    "the customer to revoke or rotate the token immediately and "
+                    "review audit logs for suspicious use. Use direct customer "
+                    "communication; do not post to the public status page for an "
+                    "isolated security event."
+                ),
+                key_facts=(
+                    "Incident Response owns partner token leaks",
+                    "Set severity SEV2",
+                    "Ask for immediate token rotation or revocation",
+                    "Review audit logs and access scope",
+                    "Do not use public status updates for isolated security events",
+                ),
+                keywords=("security", "token leak", "credential exposure", "sev2", "audit logs"),
+            ),
+            KnowledgeBaseSeed(
+                article_id="KB-DUP-03",
+                title="Duplicate ticket consolidation",
+                summary="How to consolidate duplicate tickets during an active incident.",
+                body=(
+                    "Keep the earliest ticket as primary, link later duplicates to it, "
+                    "and attach duplicate tickets to the same incident record."
+                ),
+                key_facts=(
+                    "Keep earliest ticket as primary",
+                    "Link duplicate tickets",
+                    "Attach duplicates to same incident",
+                ),
+                keywords=("duplicate", "incident", "primary ticket", "consolidation"),
+            ),
+            KnowledgeBaseSeed(
+                article_id="KB-SBX-02",
+                title="Sandbox webhook retry delays",
+                summary="Troubleshooting delayed retries in sandbox webhook delivery.",
+                body=(
+                    "Sandbox webhook latency is a non-incident support issue and is "
+                    "not treated as a security workflow."
+                ),
+                key_facts=("Sandbox workflow", "Not a security incident"),
+                keywords=("sandbox", "webhooks", "retry", "latency"),
+            ),
+        ),
+        milestones=(
+            MilestoneSpec(
+                "searched_related_tickets",
+                "Search ticket data and surface the SOC duplicate.",
+                0.08,
+            ),
+            MilestoneSpec(
+                "searched_security_playbook",
+                "Search the token-leak security playbook.",
+                0.08,
+            ),
+            MilestoneSpec("opened_primary", "Open the primary security ticket.", 0.05),
+            MilestoneSpec(
+                "queue_incident_response",
+                "Route the primary ticket to incident response.",
+                0.07,
+            ),
+            MilestoneSpec("priority_urgent", "Set the ticket priority to urgent.", 0.07),
+            MilestoneSpec(
+                "create_incident",
+                "Create an incident tied to the primary ticket.",
+                0.10,
+            ),
+            MilestoneSpec(
+                "severity_sev2",
+                "Set the incident severity to SEV2.",
+                0.10,
+            ),
+            MilestoneSpec(
+                "duplicate_linked",
+                "Link the SOC duplicate ticket to the primary ticket.",
+                0.10,
+            ),
+            MilestoneSpec(
+                "tag_security_token_leak",
+                "Tag the case as security-related token leakage.",
+                0.08,
+            ),
+            MilestoneSpec(
+                "note_rotation_audit",
+                "Document rotation and audit-log review internally.",
+                0.10,
+            ),
+            MilestoneSpec(
+                "reply_rotate_monitor",
+                "Reply with direct rotation and monitoring guidance.",
+                0.10,
+            ),
+            MilestoneSpec("status_escalated", "Leave the ticket escalated.", 0.07),
+        ),
+        guardrails=(
+            GuardrailSpec(
+                "public_status_update_on_security_incident",
+                "Security incidents should use direct communication, not public status pages.",
+                0.10,
+            ),
+            GuardrailSpec(
+                "wrong_severity_for_security_incident",
+                "A partner credential leak should be triaged as SEV2, not higher or lower.",
+                0.08,
+            ),
+            GuardrailSpec(
+                "premature_security_closure",
+                "A live token leak must remain escalated until security handling is complete.",
+                0.10,
+            ),
         ),
     ),
 )

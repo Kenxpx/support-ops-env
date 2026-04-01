@@ -26,8 +26,9 @@ cases using the standard `reset()`, `step()`, and `state()` APIs.
 
 - Real-world domain: support operations and ticket handling
 - Typed OpenEnv interface: action, observation, and state models
-- Three graded tasks: easy, medium, and hard
+- Four graded tasks with easy, medium, and hard security/outage escalation paths
 - Meaningful partial-credit rewards based on verified milestones
+- Sticky guardrail penalties for operationally unsafe actions
 - Deterministic task resets for reproducible baseline scores
 - Docker and Hugging Face Space ready
 - Judge-friendly benchmark spec and local self-check script included
@@ -35,7 +36,7 @@ cases using the standard `reset()`, `step()`, and `state()` APIs.
 
 ## Tasks
 
-The environment exposes three built-in tasks:
+The environment exposes four built-in tasks:
 
 1. `easy_refund_request`
    Route a duplicate charge complaint to Billing, use the refund policy, add the
@@ -48,6 +49,9 @@ The environment exposes three built-in tasks:
    Handle an active VIP outage with duplicate tickets by searching related
    tickets, creating and escalating an incident, linking the duplicate, and
    sending the right status-page communication.
+4. `hard_partner_token_leak`
+   Handle a partner credential leak with duplicate SOC tickets, security
+   incident severity, direct customer guidance, and no public status-page leak.
 
 ## Action Space
 
@@ -100,6 +104,11 @@ Examples:
 The reward emitted on each step is the *incremental* score earned by newly
 completed milestones. Invalid actions receive a small penalty, but the final
 task score remains the milestone-completion fraction.
+
+The benchmark also uses sticky guardrail penalties for obviously unsafe actions,
+such as resolving an enterprise auth outage before collecting input or posting
+public updates for an isolated security incident. This makes the final score
+reflect both task completion and operational judgment.
 
 ## Project Structure
 

@@ -11,6 +11,7 @@ from openenv.core.env_server.types import EnvironmentMetadata
 
 try:
     from ..models import (
+        GuardrailViolation,
         IncidentSummary,
         KnowledgeBaseArticleSummary,
         MilestoneProgress,
@@ -21,9 +22,10 @@ try:
         TicketDetail,
         TicketSummary,
     )
-    from .tasks import TASKS, TASKS_BY_ID, TaskSpec
+    from .tasks import TASKS, TASKS_BY_ID, GuardrailSpec, TaskSpec
 except ImportError:
     from models import (
+        GuardrailViolation,
         IncidentSummary,
         KnowledgeBaseArticleSummary,
         MilestoneProgress,
@@ -34,7 +36,7 @@ except ImportError:
         TicketDetail,
         TicketSummary,
     )
-    from server.tasks import TASKS, TASKS_BY_ID, TaskSpec
+    from server.tasks import TASKS, TASKS_BY_ID, GuardrailSpec, TaskSpec
 
 
 AVAILABLE_ACTIONS = [
@@ -98,6 +100,8 @@ class SupportOpsEnvironment(Environment[SupportOpsAction, SupportOpsObservation,
             focused_ticket_id=None,
             primary_incident_id=None,
             completed_milestones=[],
+            guardrail_violations=[],
+            guardrail_penalty_total=0.0,
             score=0.0,
             step_limit=selected_task.step_limit,
             last_action_type="reset",
@@ -137,9 +141,11 @@ class SupportOpsEnvironment(Environment[SupportOpsAction, SupportOpsObservation,
         self._state.step_count += 1
         self._state.last_action_type = action.action_type
         self._last_error = None
+        previous_violations = set(self._state.guardrail_violations)
 
         try:
             self._apply_action(action)
+            self._maybe_record_guardrail_violation(action)
         except ValueError as exc:
             self._last_error = str(exc)
             self._last_action_summary = f"Action rejected: {exc}"
@@ -147,7 +153,7 @@ class SupportOpsEnvironment(Environment[SupportOpsAction, SupportOpsObservation,
             done = self._is_done()
             return self._build_observation(reward=-0.05, done=done)
 
-        reward = self._update_progress()
+        reward = self._update_progress(previous_violations)
         done = self._is_done()
         return self._build_observation(reward=reward, done=done)
 
@@ -160,9 +166,10 @@ class SupportOpsEnvironment(Environment[SupportOpsAction, SupportOpsObservation,
             name="support_ops_env",
             description=(
                 "A deterministic support-ticket operations benchmark with realistic "
-                "routing, retrieval, incident response, and public-update workflows."
+                "routing, retrieval, incident response, sticky guardrail penalties, "
+                "and public-update workflows."
             ),
-            version="0.2.0",
+            version="0.3.0",
             author="Codex scaffold",
         )
 
@@ -267,6 +274,15 @@ class SupportOpsEnvironment(Environment[SupportOpsAction, SupportOpsObservation,
             )
             for milestone in self._task.milestones
         ]
+        guardrail_violations = [
+            GuardrailViolation(
+                violation_id=guardrail.violation_id,
+                description=guardrail.description,
+                penalty=guardrail.penalty,
+            )
+            for guardrail in self._task.guardrails
+            if guardrail.violation_id in self._state.guardrail_violations
+        ]
         steps_remaining = max(self._state.step_limit - self._state.step_count, 0)
 
         return SupportOpsObservation(
@@ -283,6 +299,7 @@ class SupportOpsEnvironment(Environment[SupportOpsAction, SupportOpsObservation,
             incidents=incidents,
             recent_status_updates=recent_status_updates,
             milestones=milestones,
+            guardrail_violations=guardrail_violations,
             available_actions=AVAILABLE_ACTIONS,
             queue_options=QUEUE_OPTIONS,
             priority_options=PRIORITY_OPTIONS,
@@ -291,6 +308,7 @@ class SupportOpsEnvironment(Environment[SupportOpsAction, SupportOpsObservation,
             tag_options=list(self._task.allowed_tags),
             progress=self._state.score,
             score=self._state.score,
+            guardrail_penalty_total=self._state.guardrail_penalty_total,
             last_action_summary=self._last_action_summary,
             last_error=self._last_error,
             step_limit=self._state.step_limit,
@@ -303,6 +321,8 @@ class SupportOpsEnvironment(Environment[SupportOpsAction, SupportOpsObservation,
                 "task_id": self._task.task_id,
                 "focused_ticket_id": self._state.focused_ticket_id,
                 "completed_milestones": deepcopy(self._state.completed_milestones),
+                "guardrail_violations": deepcopy(self._state.guardrail_violations),
+                "guardrail_penalty_total": self._state.guardrail_penalty_total,
                 "primary_incident_id": self._state.primary_incident_id,
             },
         )
@@ -618,7 +638,7 @@ class SupportOpsEnvironment(Environment[SupportOpsAction, SupportOpsObservation,
                 return incident
         return None
 
-    def _update_progress(self) -> float:
+    def _update_progress(self, previous_violations: set[str]) -> float:
         assert self._task is not None
         checks = self._evaluate_task()
         previous = set(self._state.completed_milestones)
@@ -639,8 +659,79 @@ class SupportOpsEnvironment(Environment[SupportOpsAction, SupportOpsObservation,
             if milestone.milestone_id in self._state.completed_milestones:
                 score += milestone.weight
 
-        self._state.score = round(min(score, 1.0), 4)
+        penalty_delta = self._guardrail_penalty(
+            set(self._state.guardrail_violations) - previous_violations
+        )
+        reward -= penalty_delta
+        self._state.guardrail_penalty_total = round(
+            self._guardrail_penalty(set(self._state.guardrail_violations)),
+            4,
+        )
+        self._state.score = round(
+            max(0.0, min(score - self._state.guardrail_penalty_total, 1.0)),
+            4,
+        )
         return reward
+
+    def _maybe_record_guardrail_violation(self, action: SupportOpsAction) -> None:
+        assert self._task is not None
+        task_id = self._task.task_id
+
+        if task_id == "easy_refund_request":
+            if action.action_type == "mark_status" and action.status == "resolved":
+                ticket = self._state.tickets["T-1001"]
+                if not any(
+                    self._contains_all(reply, ["refund", "3-5", "business"])
+                    for reply in ticket["replies"]
+                ):
+                    self._record_guardrail_violation("resolved_before_refund_guidance")
+            return
+
+        if task_id == "medium_sso_lockout":
+            if action.action_type == "mark_status" and action.status == "resolved":
+                self._record_guardrail_violation("resolved_without_customer_input")
+            if action.action_type == "send_reply":
+                reply = (action.reply or "").lower()
+                has_metadata_request = (
+                    "saml" in reply
+                    and "metadata" in reply
+                    and ("acs" in reply or "entity id" in reply)
+                )
+                if not has_metadata_request:
+                    self._record_guardrail_violation("reply_missing_metadata_request")
+            return
+
+        if task_id == "hard_vip_outage_duplicate":
+            if action.action_type == "mark_status" and action.status != "escalated":
+                self._record_guardrail_violation("deescalated_live_outage")
+            if action.action_type == "set_incident_severity" and action.severity != "sev1":
+                self._record_guardrail_violation("under_severitized_major_outage")
+            if action.action_type == "post_status_update":
+                message = (action.message or "").lower()
+                if "investigat" not in message or "eu-west" not in message:
+                    self._record_guardrail_violation("weak_public_status_update")
+            return
+
+        if task_id == "hard_partner_token_leak":
+            if action.action_type == "post_status_update":
+                self._record_guardrail_violation("public_status_update_on_security_incident")
+            if action.action_type == "set_incident_severity" and action.severity != "sev2":
+                self._record_guardrail_violation("wrong_severity_for_security_incident")
+            if action.action_type == "mark_status" and action.status != "escalated":
+                self._record_guardrail_violation("premature_security_closure")
+            return
+
+    def _record_guardrail_violation(self, violation_id: str) -> None:
+        if violation_id not in self._state.guardrail_violations:
+            self._state.guardrail_violations.append(violation_id)
+            self._state.guardrail_violations.sort()
+
+    def _guardrail_penalty(self, violation_ids: set[str]) -> float:
+        assert self._task is not None
+        penalties = {
+            guardrail.violation_id: guardrail.penalty for guardrail in self._task.guardrails
+        }
+        return round(sum(penalties[violation_id] for violation_id in violation_ids), 4)
 
     def _evaluate_task(self) -> dict[str, bool]:
         assert self._task is not None
@@ -724,6 +815,40 @@ class SupportOpsEnvironment(Environment[SupportOpsAction, SupportOpsObservation,
                 ),
                 "status_page_update": incident_update_ok,
                 "customer_reply_refs_status_page": customer_reply_ok,
+                "status_escalated": primary["status"] == "escalated",
+            }
+
+        if task_id == "hard_partner_token_leak":
+            primary = self._state.tickets["T-4001"]
+            duplicate = self._state.tickets["T-4002"]
+            incident = self._find_incident_for_ticket("T-4001")
+            incident_created = incident is not None
+            severity_sev2 = False
+
+            if incident is not None:
+                severity_sev2 = incident["severity"] == "sev2"
+
+            return {
+                "searched_related_tickets": "T-4002" in self._state.retrieved_ticket_ids,
+                "searched_security_playbook": "KB-SEC-09" in self._state.retrieved_kb_article_ids,
+                "opened_primary": "T-4001" in self._state.viewed_ticket_ids,
+                "queue_incident_response": primary["queue"] == "incident_response",
+                "priority_urgent": primary["priority"] == "urgent",
+                "create_incident": incident_created,
+                "severity_sev2": severity_sev2,
+                "duplicate_linked": duplicate["duplicate_of"] == "T-4001",
+                "tag_security_token_leak": {"security", "token_leak"}.issubset(primary["tags"]),
+                "note_rotation_audit": any(
+                    ("rotate" in note.lower() or "revoke" in note.lower())
+                    and "audit" in note.lower()
+                    and "logs" in note.lower()
+                    for note in primary["internal_notes"]
+                ),
+                "reply_rotate_monitor": any(
+                    ("rotate" in reply.lower() or "revoke" in reply.lower())
+                    and ("audit logs" in reply.lower() or "monitor" in reply.lower())
+                    for reply in primary["replies"]
+                ),
                 "status_escalated": primary["status"] == "escalated",
             }
 

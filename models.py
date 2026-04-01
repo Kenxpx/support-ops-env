@@ -109,6 +109,12 @@ class MilestoneProgress(BaseModel):
     completed: bool = Field(default=False, description="Whether milestone is complete")
 
 
+class GuardrailViolation(BaseModel):
+    violation_id: str = Field(..., description="Stable guardrail violation identifier")
+    description: str = Field(..., description="Human-readable guardrail description")
+    penalty: float = Field(..., description="Penalty applied if this violation is triggered")
+
+
 class SupportOpsAction(Action):
     """Single structured action sent to the environment."""
 
@@ -180,6 +186,10 @@ class SupportOpsObservation(Observation):
         default_factory=list,
         description="Visible progress checklist",
     )
+    guardrail_violations: list[GuardrailViolation] = Field(
+        default_factory=list,
+        description="Triggered quality or safety violations that reduce final score",
+    )
     available_actions: list[str] = Field(
         default_factory=list,
         description="Action types available to the agent",
@@ -206,6 +216,10 @@ class SupportOpsObservation(Observation):
     )
     progress: float = Field(default=0.0, description="Fraction of task completed")
     score: float = Field(default=0.0, description="Normalized task score")
+    guardrail_penalty_total: float = Field(
+        default=0.0,
+        description="Total sticky penalty from triggered guardrail violations",
+    )
     last_action_summary: str = Field(
         default="Environment reset.",
         description="Short summary of the last environment event",
@@ -239,6 +253,14 @@ class SupportOpsState(State):
     completed_milestones: list[str] = Field(
         default_factory=list,
         description="Milestones that have been satisfied",
+    )
+    guardrail_violations: list[str] = Field(
+        default_factory=list,
+        description="Guardrail violations triggered during the episode",
+    )
+    guardrail_penalty_total: float = Field(
+        default=0.0,
+        description="Sum of sticky penalties from triggered guardrails",
     )
     score: float = Field(default=0.0, description="Current normalized score")
     step_limit: int = Field(default=12, description="Maximum steps for the task")

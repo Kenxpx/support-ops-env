@@ -51,6 +51,37 @@ class SupportOpsEnvironmentTests(unittest.TestCase):
 
                 self.assertGreaterEqual(observation.score, 0.9999)
                 self.assertIsNone(observation.last_error)
+                self.assertAlmostEqual(observation.guardrail_penalty_total, 0.0, places=6)
+
+    def test_guardrail_penalty_reduces_score_for_premature_resolution(self) -> None:
+        self.env.reset(task_id="medium_sso_lockout")
+        observation = self.env.step(
+            SupportOpsAction(
+                action_type="search_kb",
+                query="SAML metadata ACS URL entity ID IdP change",
+            )
+        )
+        self.assertAlmostEqual(observation.score, 0.12, places=6)
+
+        observation = self.env.step(
+            SupportOpsAction(action_type="view_ticket", ticket_id="T-2001")
+        )
+        self.assertAlmostEqual(observation.score, 0.20, places=6)
+
+        observation = self.env.step(
+            SupportOpsAction(
+                action_type="mark_status",
+                ticket_id="T-2001",
+                status="resolved",
+            )
+        )
+
+        violation_ids = {
+            violation.violation_id for violation in observation.guardrail_violations
+        }
+        self.assertIn("resolved_without_customer_input", violation_ids)
+        self.assertAlmostEqual(observation.guardrail_penalty_total, 0.12, places=6)
+        self.assertAlmostEqual(observation.score, 0.08, places=6)
 
 
 class SupportOpsHttpTests(unittest.TestCase):

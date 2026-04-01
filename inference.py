@@ -21,6 +21,7 @@ TASK_IDS = [
     "easy_refund_request",
     "medium_sso_lockout",
     "hard_vip_outage_duplicate",
+    "hard_partner_token_leak",
 ]
 
 SYSTEM_PROMPT = """
@@ -53,6 +54,37 @@ class WorkflowPlan:
     note_milestone: str
     reply_milestone: str
     status_milestone: str
+
+
+@dataclass(frozen=True)
+class IncidentWorkflowPlan:
+    task_id: str
+    primary_ticket: str
+    duplicate_ticket: str
+    related_ticket_query: str
+    related_ticket_milestone: str
+    kb_article_id: str
+    kb_query: str
+    kb_milestone: str
+    queue: str
+    queue_milestone: str
+    priority: str
+    priority_milestone: str
+    tags: tuple[str, ...]
+    tag_milestone: str
+    incident_title: str
+    create_incident_milestone: str
+    severity: str
+    severity_milestone: str
+    duplicate_milestone: str
+    note: str
+    note_milestone: str
+    reply: str
+    reply_milestone: str
+    final_status: str
+    status_milestone: str
+    status_update_milestone: str | None = None
+    status_update_message: str | None = None
 
 
 STANDARD_WORKFLOWS: dict[str, WorkflowPlan] = {
@@ -106,6 +138,81 @@ STANDARD_WORKFLOWS: dict[str, WorkflowPlan] = {
         note_milestone="note_idp_metadata",
         reply_milestone="reply_saml_metadata",
         status_milestone="status_pending",
+    ),
+}
+
+INCIDENT_WORKFLOWS: dict[str, IncidentWorkflowPlan] = {
+    "hard_vip_outage_duplicate": IncidentWorkflowPlan(
+        task_id="hard_vip_outage_duplicate",
+        primary_ticket="T-3001",
+        duplicate_ticket="T-3002",
+        related_ticket_query="Northstar checkout outage duplicate EU-West",
+        related_ticket_milestone="searched_related_tickets",
+        kb_article_id="KB-INC-01",
+        kb_query="SEV1 incident status page duplicate outage checkout",
+        kb_milestone="searched_incident_playbook",
+        queue="incident_response",
+        queue_milestone="queue_incident_response",
+        priority="urgent",
+        priority_milestone="priority_urgent",
+        tags=("outage", "vip"),
+        tag_milestone="tag_outage_vip",
+        incident_title="Northstar EU-West checkout outage",
+        create_incident_milestone="create_incident",
+        severity="sev1",
+        severity_milestone="severity_sev1",
+        duplicate_milestone="duplicate_linked",
+        note=(
+            "EU-West outage is affecting the Checkout API across multiple stores "
+            "and should stay with incident response."
+        ),
+        note_milestone="note_region_component",
+        reply=(
+            "We are actively investigating this outage. Please follow the status "
+            "page for live updates while we work on mitigation."
+        ),
+        reply_milestone="customer_reply_refs_status_page",
+        final_status="escalated",
+        status_milestone="status_escalated",
+        status_update_milestone="status_page_update",
+        status_update_message=(
+            "We are investigating an issue affecting checkout in EU-West and will "
+            "continue sharing updates on the status page."
+        ),
+    ),
+    "hard_partner_token_leak": IncidentWorkflowPlan(
+        task_id="hard_partner_token_leak",
+        primary_ticket="T-4001",
+        duplicate_ticket="T-4002",
+        related_ticket_query="OrbitPay token exposure duplicate security",
+        related_ticket_milestone="searched_related_tickets",
+        kb_article_id="KB-SEC-09",
+        kb_query="partner API token leak audit logs rotate credential sev2",
+        kb_milestone="searched_security_playbook",
+        queue="incident_response",
+        queue_milestone="queue_incident_response",
+        priority="urgent",
+        priority_milestone="priority_urgent",
+        tags=("security", "token_leak"),
+        tag_milestone="tag_security_token_leak",
+        incident_title="OrbitPay partner token exposure",
+        create_incident_milestone="create_incident",
+        severity="sev2",
+        severity_milestone="severity_sev2",
+        duplicate_milestone="duplicate_linked",
+        note=(
+            "Rotate or revoke the exposed token immediately and review audit logs "
+            "for suspicious Partner API activity."
+        ),
+        note_milestone="note_rotation_audit",
+        reply=(
+            "Please revoke or rotate the exposed token immediately, monitor usage, "
+            "and review audit logs for suspicious requests while we keep the case "
+            "escalated."
+        ),
+        reply_milestone="reply_rotate_monitor",
+        final_status="escalated",
+        status_milestone="status_escalated",
     ),
 }
 
@@ -176,6 +283,10 @@ def build_user_prompt(observation: Any) -> str:
             update.model_dump() for update in observation.recent_status_updates
         ],
         "completed_milestones": sorted(completed_milestones(observation)),
+        "guardrail_penalty_total": observation.guardrail_penalty_total,
+        "guardrail_violations": [
+            violation.model_dump() for violation in observation.guardrail_violations
+        ],
         "remaining_milestones": [
             milestone.description
             for milestone in observation.milestones
@@ -287,94 +398,109 @@ def run_standard_workflow(observation: Any, plan: WorkflowPlan) -> SupportOpsAct
     return SupportOpsAction(action_type="noop")
 
 
+def run_incident_workflow(observation: Any, plan: IncidentWorkflowPlan) -> SupportOpsAction:
+    done = completed_milestones(observation)
+    focused_ticket_id = (
+        observation.focused_ticket.ticket_id if observation.focused_ticket else None
+    )
+    incident_id = primary_incident_id(observation, plan.primary_ticket)
+
+    if plan.related_ticket_milestone not in done and not search_contains_ticket(
+        observation, plan.duplicate_ticket
+    ):
+        return SupportOpsAction(
+            action_type="search_tickets",
+            query=plan.related_ticket_query,
+        )
+    if plan.kb_milestone not in done and not search_contains_article(
+        observation, plan.kb_article_id
+    ):
+        return SupportOpsAction(action_type="search_kb", query=plan.kb_query)
+    if focused_ticket_id != plan.primary_ticket:
+        return SupportOpsAction(action_type="view_ticket", ticket_id=plan.primary_ticket)
+    if plan.queue_milestone not in done:
+        return SupportOpsAction(
+            action_type="set_queue",
+            ticket_id=plan.primary_ticket,
+            queue=plan.queue,
+        )
+    if plan.priority_milestone not in done:
+        return SupportOpsAction(
+            action_type="set_priority",
+            ticket_id=plan.primary_ticket,
+            priority=plan.priority,
+        )
+    for tag in plan.tags:
+        if plan.tag_milestone not in done and tag not in observation.focused_ticket.tags:
+            return SupportOpsAction(
+                action_type="add_tag",
+                ticket_id=plan.primary_ticket,
+                tag=tag,
+            )
+    if plan.create_incident_milestone not in done and not incident_id:
+        return SupportOpsAction(
+            action_type="create_incident",
+            ticket_id=plan.primary_ticket,
+            incident_title=plan.incident_title,
+        )
+    if plan.severity_milestone not in done and incident_id:
+        return SupportOpsAction(
+            action_type="set_incident_severity",
+            ticket_id=plan.primary_ticket,
+            incident_id=incident_id,
+            severity=plan.severity,
+        )
+    if plan.duplicate_milestone not in done:
+        return SupportOpsAction(
+            action_type="link_duplicate",
+            ticket_id=plan.duplicate_ticket,
+            duplicate_of=plan.primary_ticket,
+        )
+    if plan.note_milestone not in done:
+        return SupportOpsAction(
+            action_type="add_internal_note",
+            ticket_id=plan.primary_ticket,
+            note=plan.note,
+        )
+    if (
+        plan.status_update_milestone
+        and plan.status_update_milestone not in done
+        and incident_id
+        and plan.status_update_message
+    ):
+        return SupportOpsAction(
+            action_type="post_status_update",
+            ticket_id=plan.primary_ticket,
+            incident_id=incident_id,
+            message=plan.status_update_message,
+        )
+    if plan.reply_milestone not in done:
+        return SupportOpsAction(
+            action_type="send_reply",
+            ticket_id=plan.primary_ticket,
+            reply=plan.reply,
+        )
+    if plan.status_milestone not in done:
+        return SupportOpsAction(
+            action_type="mark_status",
+            ticket_id=plan.primary_ticket,
+            status=plan.final_status,
+        )
+
+    return SupportOpsAction(action_type="noop")
+
+
 def heuristic_action(observation: Any) -> SupportOpsAction:
     if observation.task_id in STANDARD_WORKFLOWS:
         return run_standard_workflow(
             observation,
             STANDARD_WORKFLOWS[observation.task_id],
         )
-
-    if observation.task_id == "hard_vip_outage_duplicate":
-        done = completed_milestones(observation)
-        focused_ticket_id = (
-            observation.focused_ticket.ticket_id if observation.focused_ticket else None
+    if observation.task_id in INCIDENT_WORKFLOWS:
+        return run_incident_workflow(
+            observation,
+            INCIDENT_WORKFLOWS[observation.task_id],
         )
-        primary_ticket = "T-3001"
-        duplicate_ticket = "T-3002"
-        incident_id = primary_incident_id(observation, primary_ticket)
-
-        if "searched_related_tickets" not in done and not search_contains_ticket(observation, duplicate_ticket):
-            return SupportOpsAction(
-                action_type="search_tickets",
-                query="Northstar checkout outage duplicate EU-West",
-            )
-        if "searched_incident_playbook" not in done and not search_contains_article(observation, "KB-INC-01"):
-            return SupportOpsAction(
-                action_type="search_kb",
-                query="SEV1 incident status page duplicate outage checkout",
-            )
-        if focused_ticket_id != primary_ticket:
-            return SupportOpsAction(action_type="view_ticket", ticket_id=primary_ticket)
-        if "queue_incident_response" not in done:
-            return SupportOpsAction(
-                action_type="set_queue",
-                ticket_id=primary_ticket,
-                queue="incident_response",
-            )
-        if "priority_urgent" not in done:
-            return SupportOpsAction(
-                action_type="set_priority",
-                ticket_id=primary_ticket,
-                priority="urgent",
-            )
-        if "tag_outage_vip" not in done and "outage" not in observation.focused_ticket.tags:
-            return SupportOpsAction(action_type="add_tag", ticket_id=primary_ticket, tag="outage")
-        if "tag_outage_vip" not in done and "vip" not in observation.focused_ticket.tags:
-            return SupportOpsAction(action_type="add_tag", ticket_id=primary_ticket, tag="vip")
-        if "create_incident" not in done and not incident_id:
-            return SupportOpsAction(
-                action_type="create_incident",
-                ticket_id=primary_ticket,
-                incident_title="Northstar EU-West checkout outage",
-            )
-        if "severity_sev1" not in done and incident_id:
-            return SupportOpsAction(
-                action_type="set_incident_severity",
-                incident_id=incident_id,
-                severity="sev1",
-                ticket_id=primary_ticket,
-            )
-        if "duplicate_linked" not in done:
-            return SupportOpsAction(
-                action_type="link_duplicate",
-                ticket_id=duplicate_ticket,
-                duplicate_of=primary_ticket,
-            )
-        if "note_region_component" not in done:
-            return SupportOpsAction(
-                action_type="add_internal_note",
-                ticket_id=primary_ticket,
-                note="EU-West outage is affecting the Checkout API across multiple stores and should stay with incident response.",
-            )
-        if "status_page_update" not in done and incident_id:
-            return SupportOpsAction(
-                action_type="post_status_update",
-                incident_id=incident_id,
-                ticket_id=primary_ticket,
-                message="We are investigating an issue affecting checkout in EU-West and will continue sharing updates on the status page.",
-            )
-        if "customer_reply_refs_status_page" not in done:
-            return SupportOpsAction(
-                action_type="send_reply",
-                ticket_id=primary_ticket,
-                reply="We are actively investigating this outage. Please follow the status page for live updates while we work on mitigation.",
-            )
-        if "status_escalated" not in done:
-            return SupportOpsAction(
-                action_type="mark_status",
-                ticket_id=primary_ticket,
-                status="escalated",
-            )
 
     return SupportOpsAction(action_type="noop")
 
