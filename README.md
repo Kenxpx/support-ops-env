@@ -1,6 +1,6 @@
 ---
 title: Support Operations Environment Server
-emoji: "mailbox"
+emoji: "📬"
 colorFrom: blue
 colorTo: green
 sdk: docker
