@@ -13,7 +13,7 @@ except Exception as exc:  # pragma: no cover
 try:
     from ..models import SupportOpsAction, SupportOpsObservation
     from .support_ops_env_environment import SupportOpsEnvironment
-except ModuleNotFoundError:
+except ImportError:
     from models import SupportOpsAction, SupportOpsObservation
     from server.support_ops_env_environment import SupportOpsEnvironment
 

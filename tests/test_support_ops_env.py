@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import importlib
+import sys
 import unittest
 
 from fastapi.testclient import TestClient
@@ -84,6 +86,13 @@ class SupportOpsHttpTests(unittest.TestCase):
         state_response = self.client.get("/state")
         self.assertEqual(state_response.status_code, 200)
         self.assertEqual(state_response.json()["step_count"], 1)
+
+    def test_top_level_server_app_import_works(self) -> None:
+        # Hugging Face loads the ASGI app as `server.app`, so keep that import
+        # path under test to catch packaging regressions early.
+        sys.modules.pop("server.app", None)
+        module = importlib.import_module("server.app")
+        self.assertIsNotNone(getattr(module, "app", None))
 
 
 if __name__ == "__main__":
