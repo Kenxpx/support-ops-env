@@ -83,6 +83,67 @@ class SupportOpsEnvironmentTests(unittest.TestCase):
         self.assertAlmostEqual(observation.guardrail_penalty_total, 0.12, places=6)
         self.assertAlmostEqual(observation.score, 0.08, places=6)
 
+    def test_penalized_episode_still_finishes_after_all_milestones(self) -> None:
+        self.env.reset(task_id="medium_sso_lockout")
+
+        steps = [
+            SupportOpsAction(
+                action_type="send_reply",
+                ticket_id="T-2001",
+                reply="We are looking into this.",
+            ),
+            SupportOpsAction(
+                action_type="search_kb",
+                query="SAML metadata ACS URL entity ID IdP change",
+            ),
+            SupportOpsAction(action_type="view_ticket", ticket_id="T-2001"),
+            SupportOpsAction(
+                action_type="set_queue",
+                ticket_id="T-2001",
+                queue="technical_support",
+            ),
+            SupportOpsAction(
+                action_type="set_priority",
+                ticket_id="T-2001",
+                priority="high",
+            ),
+            SupportOpsAction(action_type="add_tag", ticket_id="T-2001", tag="sso"),
+            SupportOpsAction(
+                action_type="add_tag",
+                ticket_id="T-2001",
+                tag="enterprise_auth",
+            ),
+            SupportOpsAction(
+                action_type="add_internal_note",
+                ticket_id="T-2001",
+                note=(
+                    "Likely IdP metadata mismatch after the change. Request fresh "
+                    "SAML metadata and verify ACS URL and entity ID."
+                ),
+            ),
+            SupportOpsAction(
+                action_type="send_reply",
+                ticket_id="T-2001",
+                reply=(
+                    "Please send a fresh SAML metadata XML export from your identity "
+                    "provider and confirm the ACS URL and entity ID so we can compare "
+                    "the configuration."
+                ),
+            ),
+            SupportOpsAction(
+                action_type="mark_status",
+                ticket_id="T-2001",
+                status="pending",
+            ),
+        ]
+
+        for action in steps:
+            observation = self.env.step(action)
+
+        self.assertTrue(observation.done)
+        self.assertAlmostEqual(observation.guardrail_penalty_total, 0.08, places=6)
+        self.assertAlmostEqual(observation.score, 0.92, places=6)
+
 
 class SupportOpsHttpTests(unittest.TestCase):
     def setUp(self) -> None:

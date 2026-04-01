@@ -856,7 +856,14 @@ class SupportOpsEnvironment(Environment[SupportOpsAction, SupportOpsObservation,
 
     def _is_done(self) -> bool:
         assert self._task is not None
-        return self._state.score >= 0.9999 or self._state.step_count >= self._task.step_limit
+        return self._all_milestones_completed() or self._state.step_count >= self._task.step_limit
+
+    def _all_milestones_completed(self) -> bool:
+        assert self._task is not None
+        completed = set(self._state.completed_milestones)
+        return all(
+            milestone.milestone_id in completed for milestone in self._task.milestones
+        )
 
     def _merge_unique(self, target: list[str], values: list[str]) -> None:
         for value in values:
