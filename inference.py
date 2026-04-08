@@ -203,8 +203,24 @@ def resolve_model_name(
     return requested_model
 
 
+def proxy_model_candidates(
+    client: OpenAI | None,
+    preferred_model: str | None = None,
+) -> list[str]:
+    requested_model = (preferred_model or "").strip() or None
+    available_models = list_proxy_models(client)
+    candidates: list[str] = []
+
+    if requested_model:
+        candidates.append(requested_model)
+    for model_name in available_models:
+        if model_name not in candidates:
+            candidates.append(model_name)
+    return candidates
+
+
 def touch_llm_proxy(client: OpenAI | None, model_name: str | None) -> bool:
-    """Force at least one authenticated completion request through the proxy."""
+    """Attempt one authenticated completion request through the proxy."""
 
     if client is None or not model_name:
         return False
@@ -224,6 +240,18 @@ def touch_llm_proxy(client: OpenAI | None, model_name: str | None) -> bool:
         return True
     except Exception:  # noqa: BLE001
         return False
+
+
+def resolve_working_model_name(
+    client: OpenAI | None,
+    preferred_model: str | None = None,
+) -> str | None:
+    """Return the first proxy model that can complete a minimal chat request."""
+
+    for model_name in proxy_model_candidates(client, preferred_model):
+        if touch_llm_proxy(client, model_name):
+            return model_name
+    return None
 
 
 def candidate_docker_images(image: str) -> list[str]:
@@ -848,14 +876,10 @@ async def run_task(
 
 async def main() -> None:
     llm_client = create_llm_client()
-    active_model_name = resolve_model_name(llm_client, get_requested_model_name())
-    # Fail early if the validator injected proxy credentials but the run still
-    # cannot complete an authenticated OpenAI-compatible request.
-    if llm_client is not None and not touch_llm_proxy(llm_client, active_model_name):
-        raise RuntimeError(
-            "Injected LLM proxy credentials were present, but no proxy-backed "
-            "completion call succeeded."
-        )
+    active_model_name = resolve_working_model_name(
+        llm_client,
+        get_requested_model_name(),
+    )
     for task_id in TASK_IDS:
         await run_task(task_id, llm_client, BENCHMARK, active_model_name)
 

@@ -28,6 +28,7 @@ from support_ops_env.inference import (
     main,
     normalized_task_score,
     resolve_model_name,
+    resolve_working_model_name,
     resolve_local_docker_image,
     touch_llm_proxy,
 )
@@ -313,6 +314,55 @@ class InferenceDockerTests(unittest.TestCase):
         self.assertFalse(touch_llm_proxy(client, None))
         client.chat.completions.create.assert_not_called()
 
+    def test_resolve_working_model_name_tries_multiple_candidates(self) -> None:
+        inference_module = importlib.import_module("support_ops_env.inference")
+        sentinel_client = object()
+
+        with patch.object(
+            inference_module,
+            "proxy_model_candidates",
+            return_value=["unsupported-model", "proxy-model"],
+        ):
+            with patch.object(
+                inference_module,
+                "touch_llm_proxy",
+                side_effect=[False, True],
+            ) as mock_touch:
+                resolved = inference_module.resolve_working_model_name(
+                    sentinel_client,
+                    "unsupported-model",
+                )
+
+        self.assertEqual(resolved, "proxy-model")
+        self.assertEqual(
+            mock_touch.call_args_list[0].args,
+            (sentinel_client, "unsupported-model"),
+        )
+        self.assertEqual(
+            mock_touch.call_args_list[1].args,
+            (sentinel_client, "proxy-model"),
+        )
+
+    def test_resolve_working_model_name_returns_none_when_all_candidates_fail(self) -> None:
+        inference_module = importlib.import_module("support_ops_env.inference")
+
+        with patch.object(
+            inference_module,
+            "proxy_model_candidates",
+            return_value=["unsupported-model", "proxy-model"],
+        ):
+            with patch.object(
+                inference_module,
+                "touch_llm_proxy",
+                return_value=False,
+            ):
+                resolved = inference_module.resolve_working_model_name(
+                    object(),
+                    "unsupported-model",
+                )
+
+        self.assertIsNone(resolved)
+
     def test_normalized_task_score_stays_strictly_inside_unit_interval(self) -> None:
         self.assertEqual(normalized_task_score(0.0), 0.01)
         self.assertEqual(normalized_task_score(1.0), 0.99)
@@ -351,11 +401,14 @@ class InferenceDockerTests(unittest.TestCase):
         sentinel_client = object()
         inference_module = importlib.import_module("support_ops_env.inference")
 
-        def record_proxy_call(client: object, model_name: str | None) -> bool:
+        def record_model_resolution(
+            client: object,
+            model_name: str | None,
+        ) -> str | None:
             self.assertIs(client, sentinel_client)
             self.assertEqual(model_name, "proxy-model")
             call_order.append("proxy")
-            return True
+            return "proxy-model"
 
         async def record_run_task(
             task_id: str,
@@ -370,11 +423,15 @@ class InferenceDockerTests(unittest.TestCase):
             return 1.0
 
         with patch.object(inference_module, "create_llm_client", return_value=sentinel_client):
-            with patch.object(inference_module, "resolve_model_name", return_value="proxy-model"):
+            with patch.object(
+                inference_module,
+                "get_requested_model_name",
+                return_value="proxy-model",
+            ):
                 with patch.object(
                     inference_module,
-                    "touch_llm_proxy",
-                    side_effect=record_proxy_call,
+                    "resolve_working_model_name",
+                    side_effect=record_model_resolution,
                 ):
                     with patch(
                         "support_ops_env.inference.run_task",
@@ -385,21 +442,33 @@ class InferenceDockerTests(unittest.TestCase):
         self.assertEqual(call_order[0], "proxy")
         self.assertEqual(call_order[1:], TASK_IDS)
 
-    def test_main_raises_if_proxy_handshake_never_succeeds(self) -> None:
+    def test_main_falls_back_cleanly_when_proxy_handshake_never_succeeds(self) -> None:
         inference_module = importlib.import_module("support_ops_env.inference")
         sentinel_client = object()
 
         with patch.object(inference_module, "create_llm_client", return_value=sentinel_client):
-            with patch.object(inference_module, "resolve_model_name", return_value="proxy-model"):
-                with patch.object(inference_module, "touch_llm_proxy", return_value=False):
+            with patch.object(
+                inference_module,
+                "get_requested_model_name",
+                return_value="proxy-model",
+            ):
+                with patch.object(
+                    inference_module,
+                    "resolve_working_model_name",
+                    return_value=None,
+                ):
                     with patch(
                         "support_ops_env.inference.run_task",
-                        new=AsyncMock(),
+                        new=AsyncMock(return_value=0.99),
                     ) as mock_run_task:
-                        with self.assertRaises(RuntimeError):
-                            asyncio.run(inference_module.main())
+                        asyncio.run(inference_module.main())
 
-        mock_run_task.assert_not_called()
+        self.assertEqual(mock_run_task.await_count, len(TASK_IDS))
+        for call in mock_run_task.await_args_list:
+            self.assertIn(call.args[0], TASK_IDS)
+            self.assertEqual(call.args[1], sentinel_client)
+            self.assertEqual(call.args[2], BENCHMARK)
+            self.assertIsNone(call.args[3])
 
     def test_candidate_docker_images_include_openenv_fallback(self) -> None:
         self.assertEqual(
