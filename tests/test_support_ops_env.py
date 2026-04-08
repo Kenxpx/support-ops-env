@@ -19,6 +19,7 @@ from support_ops_env.inference import (
     format_step_line,
     heuristic_action,
     resolve_local_docker_image,
+    touch_llm_proxy,
 )
 from support_ops_env.models import SupportOpsAction
 from support_ops_env.server.app import app
@@ -242,6 +243,24 @@ class InferenceDockerTests(unittest.TestCase):
         self.assertIsNotNone(client)
         self.assertEqual(str(client.base_url), "https://proxy.example/v1/")
         self.assertEqual(client.api_key, "validator-key")
+
+    def test_touch_llm_proxy_hits_models_endpoint(self) -> None:
+        client = unittest.mock.Mock()
+        client.models.list.return_value = []
+
+        self.assertTrue(touch_llm_proxy(client))
+        client.models.list.assert_called_once_with()
+        client.chat.completions.create.assert_not_called()
+
+    @patch("support_ops_env.inference.MODEL_NAME", "proxy-model")
+    def test_touch_llm_proxy_falls_back_to_chat_completion(self) -> None:
+        client = unittest.mock.Mock()
+        client.models.list.side_effect = RuntimeError("models endpoint unavailable")
+        client.chat.completions.create.return_value = object()
+
+        self.assertTrue(touch_llm_proxy(client))
+        client.models.list.assert_called_once_with()
+        client.chat.completions.create.assert_called_once()
 
     def test_candidate_docker_images_include_openenv_fallback(self) -> None:
         self.assertEqual(

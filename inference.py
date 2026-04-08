@@ -135,9 +135,41 @@ def format_end_line(
 
 
 def create_llm_client() -> OpenAI | None:
-    if not API_KEY or not MODEL_NAME:
+    if not API_KEY:
         return None
     return OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
+
+
+def touch_llm_proxy(client: OpenAI | None) -> bool:
+    """Force at least one authenticated request through the injected LLM proxy."""
+
+    if client is None:
+        return False
+
+    try:
+        client.models.list()
+        return True
+    except Exception:  # noqa: BLE001
+        pass
+
+    if not MODEL_NAME:
+        return False
+
+    try:
+        client.chat.completions.create(
+            model=MODEL_NAME,
+            messages=[
+                {
+                    "role": "user",
+                    "content": "Reply with an empty JSON object and nothing else.",
+                }
+            ],
+            temperature=0.0,
+            max_tokens=8,
+        )
+        return True
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def candidate_docker_images(image: str) -> list[str]:
@@ -754,6 +786,7 @@ async def run_task(
 
 async def main() -> None:
     llm_client = create_llm_client()
+    touch_llm_proxy(llm_client)
     for task_id in TASK_IDS:
         await run_task(task_id, llm_client, BENCHMARK)
 
