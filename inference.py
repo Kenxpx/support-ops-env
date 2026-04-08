@@ -19,10 +19,11 @@ except ImportError:
 
 API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
 API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
-MODEL_NAME = os.getenv("MODEL_NAME")
+MODEL_NAME = os.getenv("MODEL_NAME") or "Qwen/Qwen2.5-72B-Instruct"
 ENV_BASE_URL = os.getenv("ENV_BASE_URL")
 LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME") or os.getenv("DOCKER_IMAGE")
 BENCHMARK = os.getenv("BENCHMARK_NAME") or "support_ops_env"
+SUCCESS_SCORE_THRESHOLD = 0.99
 TASK_IDS = [
     "easy_refund_request",
     "medium_sso_lockout",
@@ -738,7 +739,7 @@ async def run_task(
                 break
 
         score = max(0.0, min(float(observation.score), 1.0))
-        success = score >= 0.0
+        success = score >= SUCCESS_SCORE_THRESHOLD
         return score
     except Exception:
         return score

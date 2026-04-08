@@ -16,7 +16,8 @@ python scripts/self_check.py
 python scripts/submission_report.py
 python -m py_compile models.py client.py inference.py server/*.py
 python -m unittest discover -s tests -v
-docker build -t support-ops-env:latest -f server/Dockerfile .
+docker build -t support-ops-env:latest .
+./scripts/validate-submission.sh https://kenxpx-support-ops-env.hf.space .
 ```
 
 If you want to validate a running server after starting the container locally:
@@ -29,7 +30,9 @@ openenv validate --url http://localhost:8000
 
 - Copy `.env.example` to `.env` if you want to use a hosted model.
 - Set `HF_TOKEN` to your Hugging Face token.
-- Set `MODEL_NAME` to the router model you want to call.
+- `API_BASE_URL` defaults to `https://router.huggingface.co/v1`.
+- `MODEL_NAME` defaults to `Qwen/Qwen2.5-72B-Instruct`.
+- Set `LOCAL_IMAGE_NAME` if you want the baseline to launch a local Docker image.
 - If `MODEL_NAME` or the token is missing, `inference.py` falls back to the deterministic heuristic policy.
 
 ## Submission Form Values
@@ -45,3 +48,4 @@ Use these exact values in the form:
 - Confirm the Hugging Face Space points at the same repository state.
 - Confirm the Docker image serves the environment on port `8000`.
 - Confirm the environment responds on `/health`, `/metadata`, `/schema`, `/reset`, `/step`, and `/state`.
+- Confirm `inference.py` emits `[START]`, `[STEP]`, and `[END]` lines with per-step rewards.

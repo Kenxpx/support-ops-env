@@ -46,6 +46,11 @@ This makes the benchmark:
 - easy to explain to judges
 - more useful for baseline comparisons than sparse success-only scoring
 
+## Baseline Result
+
+The included deterministic heuristic baseline solves all four bundled tasks to a
+normalized score of `1.00` while emitting submission-compatible structured logs.
+
 ## Why The Hard Task Matters
 
 The hardest task was intentionally designed to feel benchmark-quality:

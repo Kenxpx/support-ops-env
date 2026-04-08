@@ -131,7 +131,8 @@ support_ops_env/
 |-- README.md
 |-- scripts/
 |   |-- self_check.py
-|   `-- submission_report.py
+|   |-- submission_report.py
+|   `-- validate-submission.sh
 |-- tests/
 |   `-- test_support_ops_env.py
 |-- .github/
@@ -203,12 +204,16 @@ The submission baseline lives at [inference.py](./inference.py). It:
 - uses the OpenAI client for all LLM calls
 - runs the four benchmark tasks
 - follows an inspect -> retrieve -> decide -> act pattern
-- prints per-task scores plus an average score
+- emits the required `[START]`, `[STEP]`, and `[END]` structured logs
+- falls back to the deterministic heuristic policy when model credentials are unavailable
 
 Useful optional environment variables:
 
 - `ENV_BASE_URL`: connect to an already running server
-- `DOCKER_IMAGE`: Docker image to launch when `ENV_BASE_URL` is not set
+- `LOCAL_IMAGE_NAME`: Docker image to launch when `ENV_BASE_URL` is not set
+
+On the built-in heuristic baseline, all four tasks currently complete with a
+normalized score of `1.00` in local and live-space validation runs.
 
 ## Benchmark Notes
 
@@ -220,6 +225,8 @@ Useful optional environment variables:
   URL templates for the Round 1 form.
 - [scripts/submission_report.py](./scripts/submission_report.py) runs a compact
   pre-submit report that is useful right before you push.
+- [scripts/validate-submission.sh](./scripts/validate-submission.sh) mirrors the
+  hackathon pre-validation flow for the Space URL, Docker build, and `openenv validate`.
 
 ## Suggested Validation Flow
 
