@@ -11,6 +11,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from support_ops_env.inference import (
+    BENCHMARK,
     TASK_IDS,
     candidate_docker_images,
     format_end_line,
@@ -18,7 +19,6 @@ from support_ops_env.inference import (
     format_step_line,
     heuristic_action,
     resolve_local_docker_image,
-    resolve_openai_endpoint,
 )
 from support_ops_env.models import SupportOpsAction
 from support_ops_env.server.app import app
@@ -266,26 +266,20 @@ class InferenceDockerTests(unittest.TestCase):
             "openenv-support-ops-env:latest",
         )
 
-    def test_openai_endpoint_parser_accepts_hf_router_v1(self) -> None:
-        self.assertEqual(
-            resolve_openai_endpoint("https://router.huggingface.co/v1"),
-            ("https://router.huggingface.co", 443),
-        )
-
     def test_submission_log_format_matches_required_shape(self) -> None:
         action = SupportOpsAction(action_type="set_queue", ticket_id="T-1001", queue="billing")
 
         self.assertEqual(
-            format_start_line("easy_refund_request", "support-ops-env:latest", "heuristic"),
-            "[START] task=easy_refund_request env=support-ops-env:latest model=heuristic",
+            format_start_line("easy_refund_request", BENCHMARK, "heuristic"),
+            "[START] task=easy_refund_request env=support_ops_env model=heuristic",
         )
         self.assertEqual(
             format_step_line(1, action, 0.15, False, None),
-            "[STEP] step=1 action=set_queue(T-1001,billing) reward=0.15 done=false error=none",
+            "[STEP] step=1 action=set_queue(T-1001,billing) reward=0.15 done=false error=null",
         )
         self.assertEqual(
-            format_end_line(True, 8, 1.0, 1.0),
-            "[END] success=true steps=8 rewards=1.00 score=1.00",
+            format_end_line(True, 3, 1.0, [0.0, 0.0, 1.0]),
+            "[END] success=true steps=3 score=1.00 rewards=0.00,0.00,1.00",
         )
 
 

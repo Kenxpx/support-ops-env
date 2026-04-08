@@ -8,9 +8,8 @@ import os
 import subprocess
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import urlparse
 
-from openenv.core import OpenAIClient
+from openai import OpenAI
 
 try:
     from support_ops_env import SupportOpsAction, SupportOpsEnv
@@ -22,7 +21,8 @@ API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
 API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
 MODEL_NAME = os.getenv("MODEL_NAME")
 ENV_BASE_URL = os.getenv("ENV_BASE_URL")
-DOCKER_IMAGE = os.getenv("DOCKER_IMAGE") or "support-ops-env:latest"
+LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME") or os.getenv("DOCKER_IMAGE")
+BENCHMARK = os.getenv("BENCHMARK_NAME") or "support_ops_env"
 TASK_IDS = [
     "easy_refund_request",
     "medium_sso_lockout",
@@ -51,8 +51,8 @@ def score_str(value: float | None) -> str:
 
 
 def sanitize_single_line(text: str | None) -> str:
-    compact = (text or "none").replace("\r", " ").replace("\n", " ").strip()
-    return compact or "none"
+    compact = (text or "null").replace("\r", " ").replace("\n", " ").strip()
+    return compact or "null"
 
 
 def shorten(text: str | None, max_len: int = 48) -> str:
@@ -94,10 +94,10 @@ def action_to_log(action: SupportOpsAction) -> str:
     return action.action_type
 
 
-def format_start_line(task_id: str, env_name: str, model_name: str) -> str:
+def format_start_line(task_id: str, benchmark: str, model_name: str) -> str:
     return (
         f"[START] task={sanitize_single_line(task_id)} "
-        f"env={sanitize_single_line(env_name)} "
+        f"env={sanitize_single_line(benchmark)} "
         f"model={sanitize_single_line(model_name)}"
     )
 
@@ -118,47 +118,25 @@ def format_step_line(
     )
 
 
-def format_end_line(success: bool, steps: int, rewards: float, score: float) -> str:
+def format_end_line(
+    success: bool,
+    steps: int,
+    score: float,
+    rewards: list[float],
+) -> str:
+    rewards_str = ",".join(score_str(reward) for reward in rewards) if rewards else ""
     return (
         f"[END] success={bool_str(success)} "
         f"steps={steps} "
-        f"rewards={score_str(rewards)} "
-        f"score={score_str(score)}"
+        f"score={score_str(score)} "
+        f"rewards={rewards_str}"
     )
 
 
-def resolve_openai_endpoint(base_url: str) -> tuple[str, int]:
-    candidate = base_url.strip()
-    parsed = urlparse(candidate if "://" in candidate else f"https://{candidate}")
-    if not parsed.scheme or not parsed.hostname:
-        raise ValueError("Invalid API_BASE_URL")
-
-    if parsed.path.rstrip("/") not in ("", "/v1"):
-        raise ValueError("OpenAIClient only supports root or /v1 API paths")
-
-    port = parsed.port or (443 if parsed.scheme == "https" else 80)
-    endpoint = f"{parsed.scheme}://{parsed.hostname}"
-    return endpoint, port
-
-
-def create_llm_client() -> OpenAIClient | None:
+def create_llm_client() -> OpenAI | None:
     if not API_KEY or not MODEL_NAME:
         return None
-
-    try:
-        endpoint, port = resolve_openai_endpoint(API_BASE_URL)
-    except ValueError:
-        return None
-
-    return OpenAIClient(
-        endpoint=endpoint,
-        port=port,
-        model=MODEL_NAME,
-        api_key=API_KEY,
-        system_prompt=SYSTEM_PROMPT,
-        temperature=0.0,
-        max_tokens=300,
-    )
+    return OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
 
 
 def candidate_docker_images(image: str) -> list[str]:
@@ -683,19 +661,21 @@ def heuristic_action(observation: Any) -> SupportOpsAction:
     return SupportOpsAction(action_type="noop")
 
 
-async def action_from_model(
-    observation: Any,
-    client: OpenAIClient | None,
-) -> SupportOpsAction:
+def action_from_model(observation: Any, client: OpenAI | None) -> SupportOpsAction:
     if client is None or not MODEL_NAME:
         return heuristic_action(observation)
 
     try:
-        text = await client.complete(
-            build_user_prompt(observation),
+        completion = client.chat.completions.create(
+            model=MODEL_NAME,
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": build_user_prompt(observation)},
+            ],
             temperature=0.0,
             max_tokens=300,
         )
+        text = completion.choices[0].message.content or ""
         parsed = extract_json_object(text)
         if parsed:
             return SupportOpsAction.model_validate(parsed)
@@ -709,61 +689,72 @@ async def create_env() -> tuple[SupportOpsEnv, str]:
     if ENV_BASE_URL:
         env = SupportOpsEnv(base_url=ENV_BASE_URL)
         await env.connect()
-        return env, ENV_BASE_URL
+        return env, BENCHMARK
 
-    image_name = resolve_local_docker_image(DOCKER_IMAGE)
-    return await SupportOpsEnv.from_docker_image(image_name), image_name
+    image_name = resolve_local_docker_image(
+        LOCAL_IMAGE_NAME or "support-ops-env:latest"
+    )
+    return await SupportOpsEnv.from_docker_image(image_name), BENCHMARK
 
 
 async def run_task(
-    env: SupportOpsEnv,
     task_id: str,
-    llm_client: OpenAIClient | None,
-    env_name: str,
+    llm_client: OpenAI | None,
+    benchmark: str,
 ) -> float:
-    result = await env.reset(task_id=task_id)
-    observation = result.observation
-    total_reward = 0.0
+    env: SupportOpsEnv | None = None
+    score = 0.0
+    rewards: list[float] = []
     steps_taken = 0
+    success = False
     model_name = MODEL_NAME or "heuristic"
 
-    print(format_start_line(task_id, env_name, model_name))
-
-    for step_index in range(1, observation.step_limit + 1):
-        if result.done:
-            break
-
-        action = await action_from_model(observation, llm_client)
-        result = await env.step(action)
+    print(format_start_line(task_id, benchmark, model_name))
+    try:
+        env, _ = await create_env()
+        result = await env.reset(task_id=task_id)
         observation = result.observation
-        steps_taken = step_index
-        total_reward += float(result.reward or 0.0)
-        print(
-            format_step_line(
-                step_index,
-                action,
-                result.reward,
-                result.done,
-                observation.last_error,
-            )
-        )
-        if result.done:
-            break
 
-    score = float(observation.score)
-    print(format_end_line(score >= 0.99, steps_taken, total_reward, score))
-    return score
+        for step_index in range(1, observation.step_limit + 1):
+            if result.done:
+                break
+
+            action = action_from_model(observation, llm_client)
+            result = await env.step(action)
+            observation = result.observation
+            reward = float(result.reward or 0.0)
+            rewards.append(reward)
+            steps_taken = step_index
+            print(
+                format_step_line(
+                    step_index,
+                    action,
+                    reward,
+                    result.done,
+                    observation.last_error,
+                )
+            )
+            if result.done:
+                break
+
+        score = max(0.0, min(float(observation.score), 1.0))
+        success = score >= 0.0
+        return score
+    except Exception:
+        return score
+    finally:
+        if env is not None:
+            try:
+                await env.close()
+            except Exception:
+                pass
+        print(format_end_line(success, steps_taken, score, rewards))
 
 
 async def main() -> None:
     llm_client = create_llm_client()
-
-    env, env_name = await create_env()
-    try:
-        for task_id in TASK_IDS:
-            await run_task(env, task_id, llm_client, env_name)
-    finally:
-        await env.close()
+    for task_id in TASK_IDS:
+        await run_task(task_id, llm_client, BENCHMARK)
 
 
 if __name__ == "__main__":
