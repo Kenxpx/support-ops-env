@@ -224,6 +224,25 @@ class SupportOpsHttpTests(unittest.TestCase):
 
 
 class InferenceDockerTests(unittest.TestCase):
+    def test_create_llm_client_prefers_injected_api_key(self) -> None:
+        sys.modules.pop("support_ops_env.inference", None)
+        with patch.dict(
+            "os.environ",
+            {
+                "API_BASE_URL": "https://proxy.example/v1",
+                "API_KEY": "validator-key",
+                "HF_TOKEN": "hf-fallback-token",
+                "MODEL_NAME": "proxy-model",
+            },
+            clear=False,
+        ):
+            inference_module = importlib.import_module("support_ops_env.inference")
+            client = inference_module.create_llm_client()
+
+        self.assertIsNotNone(client)
+        self.assertEqual(str(client.base_url), "https://proxy.example/v1/")
+        self.assertEqual(client.api_key, "validator-key")
+
     def test_candidate_docker_images_include_openenv_fallback(self) -> None:
         self.assertEqual(
             candidate_docker_images("support-ops-env:latest"),
