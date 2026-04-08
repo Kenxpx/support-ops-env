@@ -5,12 +5,18 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import subprocess
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlparse
 
-from openai import OpenAI
+from openenv.core import OpenAIClient
 
-from support_ops_env import SupportOpsAction, SupportOpsEnv
+try:
+    from support_ops_env import SupportOpsAction, SupportOpsEnv
+except ImportError:
+    from client import SupportOpsEnv
+    from models import SupportOpsAction
 
 API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
 API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
@@ -33,6 +39,178 @@ Use null for unused fields.
 Choose one valid action that advances the task.
 Do not return markdown or explanations.
 """.strip()
+
+
+def bool_str(value: bool) -> str:
+    return "true" if value else "false"
+
+
+def score_str(value: float | None) -> str:
+    bounded = max(0.0, min(float(value or 0.0), 1.0))
+    return f"{bounded:.2f}"
+
+
+def sanitize_single_line(text: str | None) -> str:
+    compact = (text or "none").replace("\r", " ").replace("\n", " ").strip()
+    return compact or "none"
+
+
+def shorten(text: str | None, max_len: int = 48) -> str:
+    compact = sanitize_single_line(text)
+    if len(compact) <= max_len:
+        return compact
+    return f"{compact[: max_len - 3]}..."
+
+
+def action_to_log(action: SupportOpsAction) -> str:
+    if action.action_type == "noop":
+        return "noop()"
+    if action.action_type == "search_tickets":
+        return f"search_tickets('{shorten(action.query)}')"
+    if action.action_type == "search_kb":
+        return f"search_kb('{shorten(action.query)}')"
+    if action.action_type == "view_ticket":
+        return f"view_ticket({action.ticket_id})"
+    if action.action_type == "set_queue":
+        return f"set_queue({action.ticket_id},{action.queue})"
+    if action.action_type == "set_priority":
+        return f"set_priority({action.ticket_id},{action.priority})"
+    if action.action_type == "add_tag":
+        return f"add_tag({action.ticket_id},{action.tag})"
+    if action.action_type == "add_internal_note":
+        return f"add_internal_note({action.ticket_id})"
+    if action.action_type == "send_reply":
+        return f"send_reply({action.ticket_id})"
+    if action.action_type == "mark_status":
+        return f"mark_status({action.ticket_id},{action.status})"
+    if action.action_type == "link_duplicate":
+        return f"link_duplicate({action.ticket_id}->{action.duplicate_of})"
+    if action.action_type == "create_incident":
+        return f"create_incident({action.ticket_id})"
+    if action.action_type == "set_incident_severity":
+        return f"set_incident_severity({action.incident_id},{action.severity})"
+    if action.action_type == "post_status_update":
+        return f"post_status_update({action.incident_id})"
+    return action.action_type
+
+
+def format_start_line(task_id: str, env_name: str, model_name: str) -> str:
+    return (
+        f"[START] task={sanitize_single_line(task_id)} "
+        f"env={sanitize_single_line(env_name)} "
+        f"model={sanitize_single_line(model_name)}"
+    )
+
+
+def format_step_line(
+    step_index: int,
+    action: SupportOpsAction,
+    reward: float | None,
+    done: bool,
+    error: str | None,
+) -> str:
+    return (
+        f"[STEP] step={step_index} "
+        f"action={action_to_log(action)} "
+        f"reward={score_str(reward)} "
+        f"done={bool_str(done)} "
+        f"error={sanitize_single_line(error)}"
+    )
+
+
+def format_end_line(success: bool, steps: int, rewards: float, score: float) -> str:
+    return (
+        f"[END] success={bool_str(success)} "
+        f"steps={steps} "
+        f"rewards={score_str(rewards)} "
+        f"score={score_str(score)}"
+    )
+
+
+def resolve_openai_endpoint(base_url: str) -> tuple[str, int]:
+    candidate = base_url.strip()
+    parsed = urlparse(candidate if "://" in candidate else f"https://{candidate}")
+    if not parsed.scheme or not parsed.hostname:
+        raise ValueError("Invalid API_BASE_URL")
+
+    if parsed.path.rstrip("/") not in ("", "/v1"):
+        raise ValueError("OpenAIClient only supports root or /v1 API paths")
+
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    endpoint = f"{parsed.scheme}://{parsed.hostname}"
+    return endpoint, port
+
+
+def create_llm_client() -> OpenAIClient | None:
+    if not API_KEY or not MODEL_NAME:
+        return None
+
+    try:
+        endpoint, port = resolve_openai_endpoint(API_BASE_URL)
+    except ValueError:
+        return None
+
+    return OpenAIClient(
+        endpoint=endpoint,
+        port=port,
+        model=MODEL_NAME,
+        api_key=API_KEY,
+        system_prompt=SYSTEM_PROMPT,
+        temperature=0.0,
+        max_tokens=300,
+    )
+
+
+def candidate_docker_images(image: str) -> list[str]:
+    """Return likely local image names for this environment in priority order."""
+
+    requested = (image or "").strip() or "support-ops-env:latest"
+    if ":" in requested:
+        repository, tag = requested.rsplit(":", 1)
+        has_tag = "/" not in tag
+    else:
+        repository = requested
+        tag = "latest"
+        has_tag = False
+
+    repositories = [repository]
+    if repository.startswith("openenv-"):
+        repositories.append(repository.removeprefix("openenv-"))
+    else:
+        repositories.append(f"openenv-{repository}")
+
+    candidates: list[str] = []
+    for repo in repositories:
+        candidates.append(f"{repo}:{tag}")
+        if tag != "latest":
+            candidates.append(f"{repo}:latest")
+        if not has_tag or tag == "latest":
+            candidates.append(repo)
+
+    deduped: list[str] = []
+    for candidate in candidates:
+        if candidate not in deduped:
+            deduped.append(candidate)
+    return deduped
+
+
+def resolve_local_docker_image(image: str) -> str:
+    """Prefer an existing local image so validation can run across tag conventions."""
+
+    candidates = candidate_docker_images(image)
+    try:
+        for candidate in candidates:
+            completed = subprocess.run(
+                ["docker", "image", "inspect", candidate],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if completed.returncode == 0:
+                return candidate
+    except OSError:
+        return candidates[0]
+    return candidates[0]
 
 
 @dataclass(frozen=True)
@@ -505,84 +683,85 @@ def heuristic_action(observation: Any) -> SupportOpsAction:
     return SupportOpsAction(action_type="noop")
 
 
-def action_from_model(observation: Any, client: OpenAI | None) -> SupportOpsAction:
+async def action_from_model(
+    observation: Any,
+    client: OpenAIClient | None,
+) -> SupportOpsAction:
     if client is None or not MODEL_NAME:
         return heuristic_action(observation)
 
     try:
-        completion = client.chat.completions.create(
-            model=MODEL_NAME,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": build_user_prompt(observation)},
-            ],
+        text = await client.complete(
+            build_user_prompt(observation),
             temperature=0.0,
             max_tokens=300,
         )
-        text = completion.choices[0].message.content or ""
         parsed = extract_json_object(text)
         if parsed:
             return SupportOpsAction.model_validate(parsed)
-    except Exception as exc:  # noqa: BLE001
-        print(f"Model call failed, falling back to heuristic action: {exc}")
+    except Exception:  # noqa: BLE001
+        pass
 
     return heuristic_action(observation)
 
 
-async def create_env() -> SupportOpsEnv:
+async def create_env() -> tuple[SupportOpsEnv, str]:
     if ENV_BASE_URL:
         env = SupportOpsEnv(base_url=ENV_BASE_URL)
         await env.connect()
-        return env
-    return await SupportOpsEnv.from_docker_image(DOCKER_IMAGE)
+        return env, ENV_BASE_URL
+
+    image_name = resolve_local_docker_image(DOCKER_IMAGE)
+    return await SupportOpsEnv.from_docker_image(image_name), image_name
 
 
-async def run_task(env: SupportOpsEnv, task_id: str, llm_client: OpenAI | None) -> float:
+async def run_task(
+    env: SupportOpsEnv,
+    task_id: str,
+    llm_client: OpenAIClient | None,
+    env_name: str,
+) -> float:
     result = await env.reset(task_id=task_id)
     observation = result.observation
+    total_reward = 0.0
+    steps_taken = 0
+    model_name = MODEL_NAME or "heuristic"
 
-    print(f"\n=== Running {task_id} ===")
-    print(f"Goal: {observation.goal}")
+    print(format_start_line(task_id, env_name, model_name))
 
     for step_index in range(1, observation.step_limit + 1):
         if result.done:
             break
 
-        action = action_from_model(observation, llm_client)
-        print(f"Step {step_index}: {action.model_dump(exclude_none=True)}")
+        action = await action_from_model(observation, llm_client)
         result = await env.step(action)
         observation = result.observation
+        steps_taken = step_index
+        total_reward += float(result.reward or 0.0)
         print(
-            "  "
-            f"reward={result.reward} score={observation.score:.2f} "
-            f"done={result.done} error={observation.last_error}"
+            format_step_line(
+                step_index,
+                action,
+                result.reward,
+                result.done,
+                observation.last_error,
+            )
         )
         if result.done:
             break
 
     score = float(observation.score)
-    print(f"Final score for {task_id}: {score:.2f}")
+    print(format_end_line(score >= 0.99, steps_taken, total_reward, score))
     return score
 
 
 async def main() -> None:
-    llm_client = None
-    if API_KEY and MODEL_NAME:
-        llm_client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
-    else:
-        print("MODEL_NAME or API key missing; using heuristic fallback for baseline actions.")
+    llm_client = create_llm_client()
 
-    env = await create_env()
+    env, env_name = await create_env()
     try:
-        scores: dict[str, float] = {}
         for task_id in TASK_IDS:
-            scores[task_id] = await run_task(env, task_id, llm_client)
-
-        average_score = sum(scores.values()) / len(scores)
-        print("\n=== Score Summary ===")
-        for task_id, score in scores.items():
-            print(f"{task_id}: {score:.2f}")
-        print(f"average_score: {average_score:.2f}")
+            await run_task(env, task_id, llm_client, env_name)
     finally:
         await env.close()
 

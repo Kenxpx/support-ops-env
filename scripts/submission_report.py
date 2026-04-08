@@ -11,14 +11,37 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-OPENENV_CLI = Path(sys.executable).with_name(
-    "openenv.exe" if os.name == "nt" else "openenv"
-)
+
+
+def resolve_openenv_cli() -> str:
+    executable_name = "openenv.exe" if os.name == "nt" else "openenv"
+
+    resolved = shutil.which("openenv")
+    if resolved:
+        return resolved
+
+    python_path = Path(sys.executable).resolve()
+    candidates = [
+        python_path.parent / executable_name,
+        python_path.parent / "Scripts" / executable_name,
+        python_path.parent.parent / "Scripts" / executable_name,
+        python_path.parent / "bin" / executable_name,
+        python_path.parent.parent / "bin" / executable_name,
+    ]
+
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate)
+
+    return executable_name
+
+
+OPENENV_CLI = resolve_openenv_cli()
 
 CHECKS = [
     ("self_check", [sys.executable, "scripts/self_check.py"]),
     ("unit_tests", [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-v"]),
-    ("openenv_validate", [str(OPENENV_CLI), "validate"]),
+    ("openenv_validate", [OPENENV_CLI, "validate"]),
 ]
 
 
@@ -52,10 +75,10 @@ def main() -> int:
         print("-" * 36)
 
     print("Suggested GitHub URL:")
-    print("https://github.com/<your-username>/support-ops-env")
+    print("https://github.com/Kenxpx/support-ops-env")
     print()
     print("Suggested Hugging Face Space URL:")
-    print("https://huggingface.co/spaces/<your-username>/support-ops-env")
+    print("https://huggingface.co/spaces/Kenxpx/support-ops-env")
 
     return 0 if all(success for success, _ in results) else 1
 

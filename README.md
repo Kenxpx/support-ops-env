@@ -122,6 +122,7 @@ support_ops_env/
 |-- BENCHMARK_SPEC.md
 |-- LICENSE
 |-- SUBMISSION_READY.md
+|-- Dockerfile
 |-- client.py
 |-- inference.py
 |-- models.py
@@ -185,13 +186,13 @@ python -m support_ops_env.server
 ### 3. Build Docker image
 
 ```bash
-docker build -t support-ops-env:latest -f server/Dockerfile .
+docker build -t support-ops-env:latest .
 ```
 
 ### 4. Deploy to Hugging Face Spaces
 
 ```bash
-openenv push --repo-id your-username/support-ops-env
+openenv push --repo-id Kenxpx/support-ops-env
 ```
 
 ## Baseline Inference
@@ -200,7 +201,7 @@ The submission baseline lives at [inference.py](./inference.py). It:
 
 - reads `API_BASE_URL`, `MODEL_NAME`, and `HF_TOKEN`
 - uses the OpenAI client for all LLM calls
-- runs the three benchmark tasks
+- runs the four benchmark tasks
 - follows an inspect -> retrieve -> decide -> act pattern
 - prints per-task scores plus an average score
 
@@ -227,7 +228,7 @@ python scripts/self_check.py
 python scripts/submission_report.py
 python -m py_compile models.py client.py inference.py server/*.py
 python -m unittest discover -s tests -v
-docker build -t support-ops-env:latest -f server/Dockerfile .
+docker build -t support-ops-env:latest .
 openenv validate
 ```
 
