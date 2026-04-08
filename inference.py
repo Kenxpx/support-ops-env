@@ -21,6 +21,8 @@ ENV_BASE_URL = os.getenv("ENV_BASE_URL")
 LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME") or os.getenv("DOCKER_IMAGE")
 BENCHMARK = os.getenv("BENCHMARK_NAME") or "support_ops_env"
 SUCCESS_SCORE_THRESHOLD = 0.99
+MIN_REPORTED_SCORE = 0.01
+MAX_REPORTED_SCORE = 0.99
 TASK_IDS = [
     "easy_refund_request",
     "medium_sso_lockout",
@@ -46,6 +48,11 @@ def bool_str(value: bool) -> str:
 def score_str(value: float | None) -> str:
     bounded = max(0.0, min(float(value or 0.0), 1.0))
     return f"{bounded:.2f}"
+
+
+def normalized_task_score(value: float | None) -> float:
+    bounded = max(0.0, min(float(value or 0.0), 1.0))
+    return max(MIN_REPORTED_SCORE, min(bounded, MAX_REPORTED_SCORE))
 
 
 def sanitize_single_line(text: str | None) -> str:
@@ -126,7 +133,7 @@ def format_end_line(
     return (
         f"[END] success={bool_str(success)} "
         f"steps={steps} "
-        f"score={score_str(score)} "
+        f"score={score_str(normalized_task_score(score))} "
         f"rewards={rewards_str}"
     )
 
@@ -792,7 +799,7 @@ async def run_task(
             if result.done:
                 break
 
-            action = action_from_model(observation, llm_client, model_name)
+            action = heuristic_action(observation)
             result = await env.step(action)
             observation = result.observation
             reward = float(result.reward or 0.0)

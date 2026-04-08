@@ -26,6 +26,7 @@ from support_ops_env.inference import (
     heuristic_action,
     list_proxy_models,
     main,
+    normalized_task_score,
     resolve_model_name,
     resolve_local_docker_image,
     touch_llm_proxy,
@@ -312,6 +313,11 @@ class InferenceDockerTests(unittest.TestCase):
         self.assertFalse(touch_llm_proxy(client, None))
         client.chat.completions.create.assert_not_called()
 
+    def test_normalized_task_score_stays_strictly_inside_unit_interval(self) -> None:
+        self.assertEqual(normalized_task_score(0.0), 0.01)
+        self.assertEqual(normalized_task_score(1.0), 0.99)
+        self.assertEqual(normalized_task_score(0.42), 0.42)
+
     def test_action_from_model_uses_selected_model(self) -> None:
         client = Mock()
         client.chat.completions.create.return_value = Mock(
@@ -450,7 +456,7 @@ class InferenceDockerTests(unittest.TestCase):
         )
         self.assertEqual(
             format_end_line(True, 3, 1.0, [0.0, 0.0, 1.0]),
-            "[END] success=true steps=3 score=1.00 rewards=0.00,0.00,1.00",
+            "[END] success=true steps=3 score=0.99 rewards=0.00,0.00,1.00",
         )
 
 
