@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "openenv-support-ops-env"
-version = "0.3.0"
-description = "Support operations environment for OpenEnv Round 1"
+version = "0.3.1"
+description = "Deterministic support operations benchmark for OpenEnv Round 1"
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [
-    { name = "Codex" },
+    { name = "Sachin Bind" },
 ]
 keywords = ["openenv", "benchmark", "support-ops", "agent-evals", "incident-response"]
 classifiers = [
@@ -17,6 +17,7 @@ classifiers = [
     "Programming Language :: Python :: 3 :: Only",
     "License :: OSI Approved :: BSD License",
     "Intended Audience :: Developers",
+    "Typing :: Typed",
 ]
 dependencies = [
     "openenv-core[core]>=0.2.3",
@@ -35,6 +36,10 @@ dev = [
 
 [project.scripts]
 server = "support_ops_env.server.app:main"
+
+[project.urls]
+Homepage = "https://huggingface.co/spaces/Kenxpx/support-ops-env"
+Repository = "https://github.com/Kenxpx/support-ops-env"
 
 [tool.setuptools]
 include-package-data = true
