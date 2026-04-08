@@ -1,80 +1,115 @@
 # Benchmark Spec
 
-## Overview
+## What This Benchmark Is Trying To Measure
 
-`support_ops_env` is designed as a compact but realistic support-operations
-benchmark for agent evaluation. The environment emphasizes:
+`support_ops_env` is meant to evaluate whether an agent can behave like a solid
+first-response operator, not whether it can produce polished paragraphs on
+demand.
 
-- retrieval before action
-- deterministic state transitions
-- dense programmatic grading
-- sticky penalties for unsafe operational decisions
-- realistic enterprise support workflows
-- long-horizon incident handling without requiring an actual browser
+The benchmark is built around a single support-ops world with realistic
+constraints:
 
-## Benchmark Design Goals
+- the agent needs to retrieve missing context before acting
+- the correct answer is often a workflow choice, not a sentence
+- unsafe actions should hurt the score even if the text looks reasonable
+- tasks should be reproducible enough to compare runs fairly
 
-1. Reward good operational judgment, not just text generation.
-2. Make most grading programmatic so runs are stable and reproducible.
-3. Use one coherent world instead of unrelated toy tasks.
-4. Keep tasks short enough for hackathon infrastructure while still requiring
-   multi-step planning.
+I wanted the environment to feel like work a support team would actually do, so
+the tasks revolve around queueing, escalation, incident handling, duplicate
+management, and customer communication.
 
-## Task Matrix
+## Design Principles
 
-| Task | Difficulty | Core Skills | Failure Modes |
+### 1. One coherent world
+
+All four tasks live in the same operational setting. That makes the benchmark
+feel more believable than a bag of unrelated mini-problems.
+
+### 2. Retrieval before judgment
+
+The agent should not get full credit for guessing from the ticket body alone.
+That is why `search_tickets` and `search_kb` exist, and why several milestones
+depend on using them.
+
+### 3. Dense scoring
+
+Sparse “win or lose” signals are frustrating to debug in a hackathon setting.
+This benchmark uses milestone weights so progress is visible and reproducible.
+
+### 4. Guardrails matter
+
+A support agent that closes a ticket too early or posts the wrong public update
+should not score as if it behaved well just because it eventually touched the
+right fields.
+
+## Task Table
+
+| Task | Difficulty | What Good Performance Looks Like | Common Failure Pattern |
 | --- | --- | --- | --- |
-| `easy_refund_request` | Easy | inspect, retrieve policy, route, tag, reply, resolve | wrong queue, no policy retrieval, vague reply |
-| `medium_sso_lockout` | Medium | inspect, retrieve KB, triage, explain likely cause, request artifact, leave pending | resolves too early, asks for wrong artifact, wrong queue |
-| `hard_vip_outage_duplicate` | Hard | search, incident creation, severity setting, duplicate consolidation, public communication | misses duplicate, skips incident, weak status update, wrong severity |
-| `hard_partner_token_leak` | Hard | security triage, duplicate consolidation, incident severity, direct customer guidance | public disclosure, wrong severity, premature closure |
+| `easy_refund_request` | Easy | retrieve refund policy, route to Billing, tag correctly, add note, reply clearly, resolve | resolves without policy context or routes incorrectly |
+| `medium_sso_lockout` | Medium | retrieve SSO KB article, identify likely metadata issue, ask for the right artifact, keep ticket pending | resolves too early or asks for the wrong next step |
+| `hard_vip_outage_duplicate` | Hard | search related tickets, create incident, set severity, link duplicate, send customer reply, publish status update | misses duplicate, skips incident workflow, or weakens public communication |
+| `hard_partner_token_leak` | Hard | escalate as a security incident, link duplicates, choose severity correctly, guide the customer directly | treats a sensitive case like a public outage or closes it too casually |
 
-## Reward Philosophy
+## Scoring
 
-Every task is decomposed into weighted milestones that sum to `1.0`.
+Every task is decomposed into milestone checks whose weights sum to `1.0`.
 
-Reward is:
+Examples of milestone categories:
 
-- positive when the agent newly completes a milestone
-- slightly negative for invalid actions
-- negatively adjusted by sticky guardrail violations
-- deterministic for the same task and action sequence
+- retrieved the right knowledge base article
+- moved the ticket to the correct queue
+- set the right priority
+- added the required tag
+- wrote the right internal note
+- sent the right customer reply
+- created and updated the right incident objects
 
-This makes the benchmark:
+The step reward is incremental. If a step completes a new milestone, the agent
+gets that newly earned portion on that step. Invalid actions can introduce
+small penalties, and sticky guardrail violations reduce the final score.
 
-- easy to debug
-- easy to explain to judges
-- more useful for baseline comparisons than sparse success-only scoring
+## Guardrail Philosophy
 
-## Baseline Result
+I treated some mistakes as qualitatively worse than “not quite optimal.”
 
-The included deterministic heuristic baseline solves all four bundled tasks to a
-normalized score of `1.00` while emitting submission-compatible structured logs.
+Examples:
 
-## Why The Hard Task Matters
+- resolving an enterprise auth issue before collecting the right customer input
+- making a public status-style move for a contained security incident
+- failing to consolidate duplicates during a live outage
 
-The hardest task was intentionally designed to feel benchmark-quality:
+That keeps the benchmark honest. A run should not look strong just because it
+filled the right fields eventually.
 
-- duplicate and decoy tickets force retrieval, not memorization
-- a public status update forces externally-facing communication
-- incident creation and severity force workflow correctness
-- the primary ticket must remain the operational source of truth
+## Why The Hard Tasks Matter
 
-## Why The Security Task Matters
+The hard tasks were not added just to increase step count.
 
-The second hard task adds benchmark depth instead of repetition:
+The outage task checks whether the agent can keep track of multiple tickets,
+distinguish the operational source of truth from the duplicate, and perform
+customer-facing as well as incident-facing work in the same episode.
 
-- it reuses the same support-ops world while covering security-sensitive handling
-- it rewards direct customer communication over public broadcast
-- it checks whether the agent can pick the right severity instead of always using the highest one
-- it introduces sticky guardrail penalties for bad safety behavior
+The token-leak task checks a different kind of judgment. It asks whether the
+agent knows when *not* to treat a case like a public incident and whether it
+can give useful customer guidance without leaking operational discipline.
 
-## Suggested Judge Talking Points
+## Baseline Behavior
 
-If you are demoing the project, highlight:
+The included deterministic policy solves the four bundled tasks reliably.
 
-- deterministic resets and reproducible scoring
-- retrieval-first design through `search_tickets` and `search_kb`
-- dense milestone rewards with normalized `0.0-1.0` scores
-- realistic support and incident handling rather than a toy environment
-- clean packaging for OpenEnv, Docker, and Hugging Face Spaces
+For submission-time logging, the baseline reports task scores strictly inside
+`(0, 1)` because the validator rejects endpoint values like `0.00` and `1.00`.
+That formatting choice is about validator compatibility; the environment still
+tracks normalized progress internally.
+
+## If I Were Demoing This In Three Minutes
+
+These are the points I would emphasize:
+
+- it models real support and incident workflows rather than a toy benchmark
+- the action space is typed and operational, not just text-only
+- retrieval is necessary, not decorative
+- rewards are dense enough to debug but still meaningful
+- guardrail penalties make bad judgment visible
+- the whole thing is deterministic and packaging-ready for OpenEnv, Docker, and Spaces

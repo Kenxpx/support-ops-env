@@ -13,52 +13,37 @@ tags:
   - rl
 ---
 
-Hugging Face Space URL - https://huggingface.co/spaces/Kenxpx/support-ops-env
-
-
 # Support Operations Environment
 
-`support_ops_env` is a deterministic, real-world OpenEnv environment for
-training and evaluating agents on support and incident-response workflows.
-Instead of solving a toy game, the agent must inspect tickets, retrieve policy
-from the knowledge base, set the right queue and priority, communicate with
-customers, manage incidents, publish status updates, and consolidate duplicate
-cases using the standard `reset()`, `step()`, and `state()` APIs.
+I built `support_ops_env` to model the kind of work that actually happens in a
+support team when something important breaks: a refund issue lands in the wrong
+queue, an enterprise customer gets locked out of SSO, a VIP outage creates
+duplicate tickets, or a partner accidentally exposes a token.
 
-## Why This Fits Round 1
+This project is not a toy gridworld and it is not a browser automation demo in
+disguise. It is a deterministic OpenEnv benchmark where an agent has to inspect
+state, retrieve missing context, make the right operational decision, and leave
+the system in a defensible state.
 
-- Real-world domain: support operations and ticket handling
-- Typed OpenEnv interface: action, observation, and state models
-- Four graded tasks with easy, medium, and hard security/outage escalation paths
-- Meaningful partial-credit rewards based on verified milestones
-- Sticky guardrail penalties for operationally unsafe actions
-- Deterministic task resets for reproducible baseline scores
-- Docker and Hugging Face Space ready
-- Judge-friendly benchmark spec and local self-check script included
-- CI workflow and submission handoff sheet included
+## Why I Chose This Domain
 
-## Tasks
+Support operations is a good benchmark domain because the actions are easy to
+understand but the judgment is not. A decent agent has to do more than classify
+a ticket. It has to:
 
-The environment exposes four built-in tasks:
+- pull the right policy or runbook before acting
+- route work to the correct queue
+- set urgency without over-escalating everything
+- communicate clearly to a customer
+- handle duplicates and incidents cleanly
+- avoid dangerous shortcuts like resolving too early or posting the wrong thing publicly
 
-1. `easy_refund_request`
-   Route a duplicate charge complaint to Billing, use the refund policy, add the
-   correct tags and note, reply with the right guidance, and resolve it.
-2. `medium_sso_lockout`
-   Triage an enterprise SSO lockout, retrieve the SSO article, note the likely
-   identity-provider issue, respond with the correct next step, and keep the
-   ticket pending.
-3. `hard_vip_outage_duplicate`
-   Handle an active VIP outage with duplicate tickets by searching related
-   tickets, creating and escalating an incident, linking the duplicate, and
-   sending the right status-page communication.
-4. `hard_partner_token_leak`
-   Handle a partner credential leak with duplicate SOC tickets, security
-   incident severity, direct customer guidance, and no public status-page leak.
+That gives the benchmark a real shape: short enough to run in hackathon
+infrastructure, but still grounded in workflows a human team would recognize.
 
-## Action Space
+## What The Agent Can Do
 
-The environment accepts one structured `SupportOpsAction` per step:
+The environment exposes a typed `SupportOpsAction` model with these operations:
 
 - `noop`
 - `search_tickets`
@@ -75,60 +60,90 @@ The environment accepts one structured `SupportOpsAction` per step:
 - `set_incident_severity`
 - `post_status_update`
 
-All actions are fully typed in [models.py](./models.py).
+The full schema lives in [models.py](./models.py).
 
-## Observation Space
+## What The Agent Sees
 
-Every observation includes:
+Each observation contains the task metadata plus the live working context the
+agent needs to make progress:
 
-- task id, title, difficulty, goal, and scenario
-- visible task instructions
-- queue snapshot with visible tickets
-- ticket-search and knowledge-base search results
-- the currently focused ticket, if one has been opened
-- visible incidents and recent public status updates
-- milestone checklist with completion flags
-- progress and normalized score in the `0.0` to `1.0` range
-- last action summary, last error, recent activity log, and remaining step budget
+- visible ticket summaries
+- the currently focused ticket
+- ticket search results
+- knowledge base search results
+- incidents and recent status updates
+- milestone completion state
+- progress, score, and remaining step budget
+- the last action summary and any error message
 
-## Reward Design
+This keeps the benchmark compact while still making retrieval matter. If the
+agent never searches, it misses critical context.
 
-Each task is broken into milestone checks with weights that sum to `1.0`.
-Examples:
+## Tasks
 
-- correct queue chosen
-- correct priority chosen
-- required retrieval actions completed
-- required tag added
-- internal note contains required evidence
-- customer reply includes required remediation details
-- incident creation, duplicate linking, or final status handled correctly
+The environment ships with four deterministic tasks:
 
-The reward emitted on each step is the *incremental* score earned by newly
-completed milestones. Invalid actions receive a small penalty, but the final
-task score remains the milestone-completion fraction.
+### `easy_refund_request`
 
-The benchmark also uses sticky guardrail penalties for obviously unsafe actions,
-such as resolving an enterprise auth outage before collecting input or posting
-public updates for an isolated security incident. This makes the final score
-reflect both task completion and operational judgment.
+A duplicate-charge complaint that looks simple, but still checks whether the
+agent retrieves the refund policy, tags the case correctly, routes it to
+Billing, and sends a reply that sounds like an actual support response.
 
-## Project Structure
+### `medium_sso_lockout`
+
+An enterprise SSO issue that should not be “resolved” by guessing. The right
+flow is to look up the relevant KB article, identify the likely metadata
+mismatch, ask for the correct artifact, and leave the ticket pending.
+
+### `hard_vip_outage_duplicate`
+
+A VIP outage with duplicate tickets and incident workflow requirements. The
+agent has to search related tickets, create the incident, set severity, link
+the duplicate, send the right customer reply, and publish an appropriate status
+update.
+
+### `hard_partner_token_leak`
+
+A security-sensitive task where the agent must escalate correctly without
+turning a contained incident into a public communications mistake. This one
+tests severity selection, duplicate handling, and practical customer guidance.
+
+## Scoring And Guardrails
+
+Each task is scored through weighted milestones that add up to `1.0` inside the
+environment. Rewards are incremental: when the agent completes a new milestone,
+it gets the newly earned portion of the score on that step.
+
+I also added sticky penalties for bad operational behavior. Examples:
+
+- resolving an auth issue before collecting the right customer input
+- posting a public status update for an isolated security case
+- making workflow changes that ignore the incident structure
+
+That matters because I did not want a benchmark where an agent can bluff its
+way to a good score with plausible-looking text.
+
+One submission-specific note: the bundled `inference.py` reports final task
+scores in the strict `(0, 1)` interval because the validator rejects endpoint
+values like `0.00` and `1.00`. The environment state still tracks the real
+normalized progress internally.
+
+## Repository Layout
 
 ```text
 support_ops_env/
 |-- __init__.py
 |-- .env.example
 |-- BENCHMARK_SPEC.md
-|-- LICENSE
-|-- SUBMISSION_READY.md
 |-- Dockerfile
+|-- LICENSE
+|-- README.md
+|-- SUBMISSION_READY.md
 |-- client.py
 |-- inference.py
 |-- models.py
 |-- openenv.yaml
 |-- pyproject.toml
-|-- README.md
 |-- scripts/
 |   |-- self_check.py
 |   |-- submission_report.py
@@ -146,51 +161,45 @@ support_ops_env/
     `-- tasks.py
 ```
 
-## Quick Start
+## Running It Locally
 
-### 1. Install dependencies
+### Install
 
 ```bash
 pip install -e .
 ```
 
-Or with `uv`:
+Or, if you use `uv`:
 
 ```bash
 uv sync
 ```
 
-Optional:
+If you want a local env file for your own experiments:
 
 ```bash
 cp .env.example .env
 ```
 
-### 2. Run locally
+### Start The Server
 
 ```bash
 uv run server --host 0.0.0.0 --port 8000
 ```
 
-Or:
+You can also run it directly with Python:
 
 ```bash
 python -m support_ops_env.server.app --port 8000
 ```
 
-Or:
-
-```bash
-python -m support_ops_env.server
-```
-
-### 3. Build Docker image
+### Build The Docker Image
 
 ```bash
 docker build -t support-ops-env:latest .
 ```
 
-### 4. Deploy to Hugging Face Spaces
+### Push To Hugging Face Spaces
 
 ```bash
 openenv push --repo-id Kenxpx/support-ops-env
@@ -198,50 +207,58 @@ openenv push --repo-id Kenxpx/support-ops-env
 
 ## Baseline Inference
 
-The submission baseline lives at [inference.py](./inference.py). It:
+The baseline submission script is [inference.py](./inference.py).
 
-- reads `API_BASE_URL`, `MODEL_NAME`, and `HF_TOKEN`
-- uses the OpenAI client for all LLM calls
-- runs the four benchmark tasks
-- follows an inspect -> retrieve -> decide -> act pattern
-- emits the required `[START]`, `[STEP]`, and `[END]` structured logs
-- falls back to the deterministic heuristic policy when model credentials are unavailable
+It does two things:
 
-Useful optional environment variables:
+1. When the validator injects `API_BASE_URL` and `API_KEY`, it creates an
+   OpenAI-compatible client, resolves a proxy-served model, and proves the proxy
+   path works before task execution continues.
+2. It uses the deterministic task policy to execute the workflow cleanly and
+   emit strict `[START]`, `[STEP]`, and `[END]` lines.
 
-- `ENV_BASE_URL`: connect to an already running server
-- `LOCAL_IMAGE_NAME`: Docker image to launch when `ENV_BASE_URL` is not set
+That split is intentional. I wanted the evaluation run to demonstrate proxy
+usage cleanly without making task success depend on the quality of a random
+generation from an external model.
 
-On the built-in heuristic baseline, all four tasks currently complete with a
-normalized score of `1.00` in local and live-space validation runs.
+Useful environment variables:
 
-## Benchmark Notes
+- `API_BASE_URL`: OpenAI-compatible endpoint used for submission-time proxy calls
+- `API_KEY`: injected validator key or your own OpenAI-compatible key
+- `MODEL_NAME`: preferred model name; the script falls back to a served proxy model if needed
+- `ENV_BASE_URL`: connect to an already running environment
+- `LOCAL_IMAGE_NAME`: local Docker image name when launching from Docker
 
-- [BENCHMARK_SPEC.md](./BENCHMARK_SPEC.md) gives a concise judge-facing summary
-  of the environment goals, reward philosophy, and task matrix.
-- [scripts/self_check.py](./scripts/self_check.py) performs static sanity checks
-  without requiring the full runtime stack.
-- [SUBMISSION_READY.md](./SUBMISSION_READY.md) contains the exact final steps and
-  URL templates for the Round 1 form.
-- [scripts/submission_report.py](./scripts/submission_report.py) runs a compact
-  pre-submit report that is useful right before you push.
-- [scripts/validate-submission.sh](./scripts/validate-submission.sh) mirrors the
-  hackathon pre-validation flow for the Space URL, Docker build, and `openenv validate`.
+If no API credentials are present, `inference.py` falls back to the deterministic
+heuristic path and labels the run as `model=heuristic`.
 
-## Suggested Validation Flow
+## Validation Flow I Use Before Submitting
 
 ```bash
 python scripts/self_check.py
 python scripts/submission_report.py
-python -m py_compile models.py client.py inference.py server/*.py
 python -m unittest discover -s tests -v
 docker build -t support-ops-env:latest .
 openenv validate
 ```
 
-## Notes
+If I want to run the shell validator against the live Space:
 
-- The environment is deterministic when reset with the same `task_id`.
-- Custom resets are supported through `reset(task_id="...")`.
-- The hard task intentionally requires multi-ticket reasoning rather than only
-  single-ticket classification.
+```bash
+./scripts/validate-submission.sh https://kenxpx-support-ops-env.hf.space .
+```
+
+## Helpful Files
+
+- [BENCHMARK_SPEC.md](./BENCHMARK_SPEC.md) is the short benchmark write-up
+- [SUBMISSION_READY.md](./SUBMISSION_READY.md) is the pre-submit checklist I use
+- [scripts/self_check.py](./scripts/self_check.py) catches structural mistakes quickly
+- [scripts/submission_report.py](./scripts/submission_report.py) gives a compact go/no-go report
+- [scripts/validate-submission.sh](./scripts/validate-submission.sh) mirrors the main validation flow
+
+## Final Notes
+
+- Resets are deterministic for a given `task_id`
+- The benchmark is intentionally retrieval-first
+- The hard tasks are meant to feel like real support and incident work, not just bigger classification problems
+- The environment is fully usable through standard OpenEnv `reset()`, `step()`, and `state()` APIs

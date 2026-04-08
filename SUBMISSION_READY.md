@@ -1,51 +1,70 @@
-# Submission Ready Checklist
+# Submission Notes
 
-Use this checklist right before you submit the environment.
+This is the short checklist I use before I hit submit.
 
-## Canonical URLs
+## Canonical Links
 
-- GitHub repository: `https://github.com/Kenxpx/support-ops-env`
+- GitHub: `https://github.com/Kenxpx/support-ops-env`
 - Hugging Face Space: `https://huggingface.co/spaces/Kenxpx/support-ops-env`
 
-## Local Validation
+If the dashboard asks for anything else, I stop and double-check before
+submitting.
 
-Run these commands from the repository root:
+## Pre-Submit Checks
+
+Run these from the repository root:
 
 ```bash
 python scripts/self_check.py
 python scripts/submission_report.py
-python -m py_compile models.py client.py inference.py server/*.py
 python -m unittest discover -s tests -v
 docker build -t support-ops-env:latest .
+openenv validate
+```
+
+If I want to run the shell validator against the live Space as well:
+
+```bash
 ./scripts/validate-submission.sh https://kenxpx-support-ops-env.hf.space .
 ```
 
-If you want to validate a running server after starting the container locally:
+## Environment Variables
 
-```bash
-openenv validate --url http://localhost:8000
-```
+For local experimentation, I can copy `.env.example` to `.env`, but I do **not**
+commit `.env`.
 
-## Runtime Configuration
+Relevant runtime variables:
 
-- Copy `.env.example` to `.env` if you want to use a hosted model.
-- Set `HF_TOKEN` to your Hugging Face token.
-- `API_BASE_URL` defaults to `https://router.huggingface.co/v1`.
-- `MODEL_NAME` defaults to `Qwen/Qwen2.5-72B-Instruct`.
-- Set `LOCAL_IMAGE_NAME` if you want the baseline to launch a local Docker image.
-- If `MODEL_NAME` or the token is missing, `inference.py` falls back to the deterministic heuristic policy.
+- `API_BASE_URL`
+- `API_KEY`
+- `MODEL_NAME`
+- `ENV_BASE_URL`
+- `LOCAL_IMAGE_NAME`
 
-## Submission Form Values
+For the hackathon validator, the important part is that `inference.py` reads the
+injected `API_BASE_URL` and `API_KEY` at runtime and sends an OpenAI-compatible
+request through that proxy before task execution continues.
 
-Use these exact values in the form:
+## Submission-Specific Notes
+
+- The inference script lives at the repo root as `inference.py`
+- Structured output uses `[START]`, `[STEP]`, and `[END]`
+- Reported task scores are kept strictly inside `(0, 1)` for validator compatibility
+- The task policy is deterministic, so local reruns should be stable
+
+## Final Sanity Pass
+
+Right before submitting, I confirm:
+
+- the latest code is pushed to GitHub
+- the Hugging Face Space has been refreshed after the latest push
+- the Space responds on `/health`, `/metadata`, and `POST /reset`
+- `openenv validate` still passes
+- unit tests still pass
+
+## Exact Form Values
+
+Use these exact URLs in the submission form:
 
 - GitHub Repository URL: `https://github.com/Kenxpx/support-ops-env`
 - Hugging Face Space URL: `https://huggingface.co/spaces/Kenxpx/support-ops-env`
-
-## Final Sanity Check
-
-- Confirm the latest code is pushed to GitHub.
-- Confirm the Hugging Face Space points at the same repository state.
-- Confirm the Docker image serves the environment on port `8000`.
-- Confirm the environment responds on `/health`, `/metadata`, `/schema`, `/reset`, `/step`, and `/state`.
-- Confirm `inference.py` emits `[START]`, `[STEP]`, and `[END]` lines with per-step rewards.
