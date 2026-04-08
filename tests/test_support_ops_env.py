@@ -2,22 +2,25 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 import subprocess
 import sys
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from fastapi.testclient import TestClient
 
 from support_ops_env.inference import (
     BENCHMARK,
     TASK_IDS,
+    create_llm_client,
     candidate_docker_images,
     format_end_line,
     format_start_line,
     format_step_line,
     heuristic_action,
+    main,
     resolve_local_docker_image,
     touch_llm_proxy,
 )
@@ -225,6 +228,10 @@ class SupportOpsHttpTests(unittest.TestCase):
 
 
 class InferenceDockerTests(unittest.TestCase):
+    def test_create_llm_client_requires_api_key(self) -> None:
+        with patch("support_ops_env.inference.API_KEY", None):
+            self.assertIsNone(create_llm_client())
+
     def test_create_llm_client_prefers_injected_api_key(self) -> None:
         sys.modules.pop("support_ops_env.inference", None)
         with patch.dict(
@@ -245,7 +252,7 @@ class InferenceDockerTests(unittest.TestCase):
         self.assertEqual(client.api_key, "validator-key")
 
     def test_touch_llm_proxy_hits_models_endpoint(self) -> None:
-        client = unittest.mock.Mock()
+        client = Mock()
         client.models.list.return_value = []
 
         self.assertTrue(touch_llm_proxy(client))
@@ -254,13 +261,43 @@ class InferenceDockerTests(unittest.TestCase):
 
     @patch("support_ops_env.inference.MODEL_NAME", "proxy-model")
     def test_touch_llm_proxy_falls_back_to_chat_completion(self) -> None:
-        client = unittest.mock.Mock()
+        client = Mock()
         client.models.list.side_effect = RuntimeError("models endpoint unavailable")
         client.chat.completions.create.return_value = object()
 
         self.assertTrue(touch_llm_proxy(client))
         client.models.list.assert_called_once_with()
         client.chat.completions.create.assert_called_once()
+
+    def test_touch_llm_proxy_returns_false_without_client(self) -> None:
+        self.assertFalse(touch_llm_proxy(None))
+
+    def test_main_touches_proxy_before_running_tasks(self) -> None:
+        call_order: list[str] = []
+        sentinel_client = object()
+        inference_module = importlib.import_module("support_ops_env.inference")
+
+        def record_proxy_call(client: object) -> bool:
+            self.assertIs(client, sentinel_client)
+            call_order.append("proxy")
+            return True
+
+        async def record_run_task(task_id: str, llm_client: object, benchmark: str) -> float:
+            self.assertIs(llm_client, sentinel_client)
+            self.assertEqual(benchmark, BENCHMARK)
+            call_order.append(task_id)
+            return 1.0
+
+        with patch.object(inference_module, "create_llm_client", return_value=sentinel_client):
+            with patch.object(inference_module, "touch_llm_proxy", side_effect=record_proxy_call):
+                with patch(
+                    "support_ops_env.inference.run_task",
+                    new=AsyncMock(side_effect=record_run_task),
+                ):
+                    asyncio.run(inference_module.main())
+
+        self.assertEqual(call_order[0], "proxy")
+        self.assertEqual(call_order[1:], TASK_IDS)
 
     def test_candidate_docker_images_include_openenv_fallback(self) -> None:
         self.assertEqual(
