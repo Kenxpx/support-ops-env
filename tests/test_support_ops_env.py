@@ -20,6 +20,9 @@ from support_ops_env.inference import (
     format_end_line,
     format_start_line,
     format_step_line,
+    get_api_key,
+    get_api_base_url,
+    get_requested_model_name,
     heuristic_action,
     list_proxy_models,
     main,
@@ -231,8 +234,24 @@ class SupportOpsHttpTests(unittest.TestCase):
 
 
 class InferenceDockerTests(unittest.TestCase):
+    def test_get_api_base_url_uses_injected_value(self) -> None:
+        with patch.dict("os.environ", {"API_BASE_URL": "https://proxy.example/v1"}, clear=False):
+            self.assertEqual(get_api_base_url(), "https://proxy.example/v1")
+
+    def test_get_api_key_prefers_injected_api_key(self) -> None:
+        with patch.dict(
+            "os.environ",
+            {"API_KEY": "validator-key", "HF_TOKEN": "hf-fallback-token"},
+            clear=False,
+        ):
+            self.assertEqual(get_api_key(), "validator-key")
+
+    def test_get_requested_model_name_uses_runtime_env(self) -> None:
+        with patch.dict("os.environ", {"MODEL_NAME": "proxy-model"}, clear=False):
+            self.assertEqual(get_requested_model_name(), "proxy-model")
+
     def test_create_llm_client_requires_api_key(self) -> None:
-        with patch("support_ops_env.inference.API_KEY", None):
+        with patch.dict("os.environ", {}, clear=True):
             self.assertIsNone(create_llm_client())
 
     def test_create_llm_client_prefers_injected_api_key(self) -> None:
@@ -359,6 +378,22 @@ class InferenceDockerTests(unittest.TestCase):
 
         self.assertEqual(call_order[0], "proxy")
         self.assertEqual(call_order[1:], TASK_IDS)
+
+    def test_main_raises_if_proxy_handshake_never_succeeds(self) -> None:
+        inference_module = importlib.import_module("support_ops_env.inference")
+        sentinel_client = object()
+
+        with patch.object(inference_module, "create_llm_client", return_value=sentinel_client):
+            with patch.object(inference_module, "resolve_model_name", return_value="proxy-model"):
+                with patch.object(inference_module, "touch_llm_proxy", return_value=False):
+                    with patch(
+                        "support_ops_env.inference.run_task",
+                        new=AsyncMock(),
+                    ) as mock_run_task:
+                        with self.assertRaises(RuntimeError):
+                            asyncio.run(inference_module.main())
+
+        mock_run_task.assert_not_called()
 
     def test_candidate_docker_images_include_openenv_fallback(self) -> None:
         self.assertEqual(

@@ -17,9 +17,6 @@ except ImportError:
     from client import SupportOpsEnv
     from models import SupportOpsAction
 
-API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
-API_KEY = os.getenv("API_KEY") or os.getenv("HF_TOKEN")
-MODEL_NAME = os.getenv("MODEL_NAME") or "Qwen/Qwen2.5-72B-Instruct"
 ENV_BASE_URL = os.getenv("ENV_BASE_URL")
 LOCAL_IMAGE_NAME = os.getenv("LOCAL_IMAGE_NAME") or os.getenv("DOCKER_IMAGE")
 BENCHMARK = os.getenv("BENCHMARK_NAME") or "support_ops_env"
@@ -134,10 +131,23 @@ def format_end_line(
     )
 
 
+def get_api_base_url() -> str:
+    return os.environ.get("API_BASE_URL", "https://router.huggingface.co/v1")
+
+
+def get_api_key() -> str | None:
+    return os.environ.get("API_KEY") or os.environ.get("HF_TOKEN")
+
+
+def get_requested_model_name() -> str | None:
+    return os.environ.get("MODEL_NAME") or "Qwen/Qwen2.5-72B-Instruct"
+
+
 def create_llm_client() -> OpenAI | None:
-    if not API_KEY:
+    api_key = get_api_key()
+    if not api_key:
         return None
-    return OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
+    return OpenAI(base_url=get_api_base_url(), api_key=api_key)
 
 
 def list_proxy_models(client: OpenAI | None) -> list[str]:
@@ -816,8 +826,12 @@ async def run_task(
 
 async def main() -> None:
     llm_client = create_llm_client()
-    active_model_name = resolve_model_name(llm_client, MODEL_NAME)
-    touch_llm_proxy(llm_client, active_model_name)
+    active_model_name = resolve_model_name(llm_client, get_requested_model_name())
+    if llm_client is not None and not touch_llm_proxy(llm_client, active_model_name):
+        raise RuntimeError(
+            "Injected LLM proxy credentials were present, but no proxy-backed "
+            "completion call succeeded."
+        )
     for task_id in TASK_IDS:
         await run_task(task_id, llm_client, BENCHMARK, active_model_name)
 
