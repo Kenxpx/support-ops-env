@@ -140,24 +140,49 @@ def create_llm_client() -> OpenAI | None:
     return OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
 
 
-def touch_llm_proxy(client: OpenAI | None) -> bool:
-    """Force at least one authenticated request through the injected LLM proxy."""
-
+def list_proxy_models(client: OpenAI | None) -> list[str]:
     if client is None:
-        return False
+        return []
 
     try:
-        client.models.list()
-        return True
+        response = client.models.list()
     except Exception:  # noqa: BLE001
-        pass
+        return []
 
-    if not MODEL_NAME:
+    model_ids: list[str] = []
+    for model in getattr(response, "data", []) or []:
+        model_id = getattr(model, "id", None)
+        if isinstance(model_id, str) and model_id.strip():
+            model_ids.append(model_id.strip())
+    return model_ids
+
+
+def resolve_model_name(
+    client: OpenAI | None,
+    preferred_model: str | None = None,
+) -> str | None:
+    if client is None:
+        return None
+
+    requested_model = (preferred_model or "").strip() or None
+    available_models = list_proxy_models(client)
+
+    if requested_model and (not available_models or requested_model in available_models):
+        return requested_model
+    if available_models:
+        return available_models[0]
+    return requested_model
+
+
+def touch_llm_proxy(client: OpenAI | None, model_name: str | None) -> bool:
+    """Force at least one authenticated completion request through the proxy."""
+
+    if client is None or not model_name:
         return False
 
     try:
         client.chat.completions.create(
-            model=MODEL_NAME,
+            model=model_name,
             messages=[
                 {
                     "role": "user",
@@ -694,13 +719,17 @@ def heuristic_action(observation: Any) -> SupportOpsAction:
     return SupportOpsAction(action_type="noop")
 
 
-def action_from_model(observation: Any, client: OpenAI | None) -> SupportOpsAction:
-    if client is None or not MODEL_NAME:
+def action_from_model(
+    observation: Any,
+    client: OpenAI | None,
+    model_name: str | None,
+) -> SupportOpsAction:
+    if client is None or not model_name:
         return heuristic_action(observation)
 
     try:
         completion = client.chat.completions.create(
-            model=MODEL_NAME,
+            model=model_name,
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": build_user_prompt(observation)},
@@ -734,15 +763,16 @@ async def run_task(
     task_id: str,
     llm_client: OpenAI | None,
     benchmark: str,
+    model_name: str | None,
 ) -> float:
     env: SupportOpsEnv | None = None
     score = 0.0
     rewards: list[float] = []
     steps_taken = 0
     success = False
-    model_name = MODEL_NAME or "heuristic"
+    display_model_name = model_name or "heuristic"
 
-    print(format_start_line(task_id, benchmark, model_name))
+    print(format_start_line(task_id, benchmark, display_model_name))
     try:
         env, _ = await create_env()
         result = await env.reset(task_id=task_id)
@@ -752,7 +782,7 @@ async def run_task(
             if result.done:
                 break
 
-            action = action_from_model(observation, llm_client)
+            action = action_from_model(observation, llm_client, model_name)
             result = await env.step(action)
             observation = result.observation
             reward = float(result.reward or 0.0)
@@ -786,9 +816,10 @@ async def run_task(
 
 async def main() -> None:
     llm_client = create_llm_client()
-    touch_llm_proxy(llm_client)
+    active_model_name = resolve_model_name(llm_client, MODEL_NAME)
+    touch_llm_proxy(llm_client, active_model_name)
     for task_id in TASK_IDS:
-        await run_task(task_id, llm_client, BENCHMARK)
+        await run_task(task_id, llm_client, BENCHMARK, active_model_name)
 
 
 if __name__ == "__main__":

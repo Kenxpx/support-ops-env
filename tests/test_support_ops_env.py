@@ -14,13 +14,16 @@ from fastapi.testclient import TestClient
 from support_ops_env.inference import (
     BENCHMARK,
     TASK_IDS,
+    action_from_model,
     create_llm_client,
     candidate_docker_images,
     format_end_line,
     format_start_line,
     format_step_line,
     heuristic_action,
+    list_proxy_models,
     main,
+    resolve_model_name,
     resolve_local_docker_image,
     touch_llm_proxy,
 )
@@ -251,50 +254,108 @@ class InferenceDockerTests(unittest.TestCase):
         self.assertEqual(str(client.base_url), "https://proxy.example/v1/")
         self.assertEqual(client.api_key, "validator-key")
 
-    def test_touch_llm_proxy_hits_models_endpoint(self) -> None:
+    def test_list_proxy_models_extracts_ids(self) -> None:
         client = Mock()
-        client.models.list.return_value = []
+        client.models.list.return_value = Mock(
+            data=[Mock(id="proxy-model"), Mock(id="backup-model"), Mock(id="")]
+        )
 
-        self.assertTrue(touch_llm_proxy(client))
+        self.assertEqual(list_proxy_models(client), ["proxy-model", "backup-model"])
         client.models.list.assert_called_once_with()
-        client.chat.completions.create.assert_not_called()
 
-    @patch("support_ops_env.inference.MODEL_NAME", "proxy-model")
-    def test_touch_llm_proxy_falls_back_to_chat_completion(self) -> None:
+    def test_resolve_model_name_prefers_available_requested_model(self) -> None:
         client = Mock()
-        client.models.list.side_effect = RuntimeError("models endpoint unavailable")
+        client.models.list.return_value = Mock(data=[Mock(id="proxy-model")])
+
+        self.assertEqual(resolve_model_name(client, "proxy-model"), "proxy-model")
+
+    def test_resolve_model_name_returns_none_without_client(self) -> None:
+        self.assertIsNone(resolve_model_name(None, "proxy-model"))
+
+    def test_resolve_model_name_falls_back_to_first_proxy_model(self) -> None:
+        client = Mock()
+        client.models.list.return_value = Mock(data=[Mock(id="proxy-model")])
+
+        self.assertEqual(resolve_model_name(client, "unsupported-model"), "proxy-model")
+
+    def test_touch_llm_proxy_uses_resolved_model(self) -> None:
+        client = Mock()
         client.chat.completions.create.return_value = object()
 
-        self.assertTrue(touch_llm_proxy(client))
-        client.models.list.assert_called_once_with()
+        self.assertTrue(touch_llm_proxy(client, "proxy-model"))
         client.chat.completions.create.assert_called_once()
 
     def test_touch_llm_proxy_returns_false_without_client(self) -> None:
-        self.assertFalse(touch_llm_proxy(None))
+        self.assertFalse(touch_llm_proxy(None, "proxy-model"))
+
+    def test_touch_llm_proxy_returns_false_without_model_name(self) -> None:
+        client = Mock()
+        self.assertFalse(touch_llm_proxy(client, None))
+        client.chat.completions.create.assert_not_called()
+
+    def test_action_from_model_uses_selected_model(self) -> None:
+        client = Mock()
+        client.chat.completions.create.return_value = Mock(
+            choices=[
+                Mock(
+                    message=Mock(
+                        content=(
+                            '{"action_type":"noop","ticket_id":null,"queue":null,'
+                            '"priority":null,"tag":null,"note":null,"reply":null,'
+                            '"status":null,"duplicate_of":null,"query":null,'
+                            '"incident_id":null,"incident_title":null,"severity":null,'
+                            '"message":null}'
+                        )
+                    )
+                )
+            ]
+        )
+        observation = Mock()
+        with patch("support_ops_env.inference.build_user_prompt", return_value="{}"):
+            action = action_from_model(observation, client, "proxy-model")
+
+        self.assertEqual(action.action_type, "noop")
+        client.chat.completions.create.assert_called_once()
+        self.assertEqual(
+            client.chat.completions.create.call_args.kwargs["model"],
+            "proxy-model",
+        )
 
     def test_main_touches_proxy_before_running_tasks(self) -> None:
         call_order: list[str] = []
         sentinel_client = object()
         inference_module = importlib.import_module("support_ops_env.inference")
 
-        def record_proxy_call(client: object) -> bool:
+        def record_proxy_call(client: object, model_name: str | None) -> bool:
             self.assertIs(client, sentinel_client)
+            self.assertEqual(model_name, "proxy-model")
             call_order.append("proxy")
             return True
 
-        async def record_run_task(task_id: str, llm_client: object, benchmark: str) -> float:
+        async def record_run_task(
+            task_id: str,
+            llm_client: object,
+            benchmark: str,
+            model_name: str | None,
+        ) -> float:
             self.assertIs(llm_client, sentinel_client)
             self.assertEqual(benchmark, BENCHMARK)
+            self.assertEqual(model_name, "proxy-model")
             call_order.append(task_id)
             return 1.0
 
         with patch.object(inference_module, "create_llm_client", return_value=sentinel_client):
-            with patch.object(inference_module, "touch_llm_proxy", side_effect=record_proxy_call):
-                with patch(
-                    "support_ops_env.inference.run_task",
-                    new=AsyncMock(side_effect=record_run_task),
+            with patch.object(inference_module, "resolve_model_name", return_value="proxy-model"):
+                with patch.object(
+                    inference_module,
+                    "touch_llm_proxy",
+                    side_effect=record_proxy_call,
                 ):
-                    asyncio.run(inference_module.main())
+                    with patch(
+                        "support_ops_env.inference.run_task",
+                        new=AsyncMock(side_effect=record_run_task),
+                    ):
+                        asyncio.run(inference_module.main())
 
         self.assertEqual(call_order[0], "proxy")
         self.assertEqual(call_order[1:], TASK_IDS)
